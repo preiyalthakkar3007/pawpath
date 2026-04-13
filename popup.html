@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PawPath</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+
+  <!-- ===== HEADER ===== -->
+  <header id="header">
+    <span id="header-paw">🐾</span>
+    <span id="header-title">PawPath</span>
+    <button id="settings-btn" title="Settings">⚙️</button>
+  </header>
+
+  <!-- ===== SYNC STATUS ROW ===== -->
+  <div id="sync-row">
+    <button class="sync-pill" id="pill-myplan" title="Sync from MyPlan">
+      <span class="pill-paw">⬜</span>
+      <span class="pill-label">MyPlan</span>
+    </button>
+    <button class="sync-pill" id="pill-dawgpath" title="Sync from DawgPath">
+      <span class="pill-paw">⬜</span>
+      <span class="pill-label">DawgPath</span>
+    </button>
+    <button class="sync-pill" id="pill-timeschedule" title="Sync from Time Schedule">
+      <span class="pill-paw">⬜</span>
+      <span class="pill-label">Time Schedule</span>
+    </button>
+  </div>
+
+  <!-- ===== MAIN BODY (sidebar + planner grid) ===== -->
+  <div id="main-body">
+
+    <!-- LEFT SIDEBAR: unplanned courses -->
+    <aside id="sidebar">
+      <div id="sidebar-label">UNPLANNED</div>
+      <div id="unplanned-list">
+        <!-- Course chips injected by popup.js -->
+      </div>
+    </aside>
+
+    <!-- PLANNER GRID: horizontally scrollable quarter columns -->
+    <div id="planner-grid">
+      <!-- Quarter columns injected by popup.js -->
+    </div>
+
+  </div>
+
+  <!-- ===== FOOTER ===== -->
+  <footer id="footer">PawPath · UW Seattle</footer>
+
+  <!-- ===== DUBS MASCOT ===== -->
+  <div id="mascot-wrapper">
+    <div id="speech-bubble">
+      <span id="speech-text">Loading your plan... 🐾</span>
+    </div>
+    <img id="mascot-img" src="images/smile.png" alt="Dubs the husky mascot" />
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

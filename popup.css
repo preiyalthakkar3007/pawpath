@@ -1,0 +1,461 @@
+/* ============================================================
+   PawPath — popup.css
+   UW Purple: #4b2e83  |  UW Gold: #b7a57a  |  White: #ffffff
+   Grid bg:   #f8f6ff  (very light purple tint)
+   ============================================================ */
+
+/* ---------- Reset & Base ---------- */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  width: 400px;
+  height: 580px;
+  display: flex;
+  flex-direction: column;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  color: #1a1a2e;
+  background: #f8f6ff;
+  overflow: hidden;
+  position: relative;
+}
+
+/* ---------- Header ---------- */
+#header {
+  display: flex;
+  align-items: center;
+  background: #4b2e83;
+  padding: 0 12px;
+  height: 44px;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+#header-paw {
+  font-size: 18px;
+  margin-right: 8px;
+  filter: sepia(1) saturate(3) hue-rotate(5deg); /* gold-ish tint */
+}
+
+#header-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: #ffffff;
+  letter-spacing: 0.5px;
+  flex: 1;
+}
+
+#settings-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 18px;
+  color: #b7a57a;
+  padding: 4px;
+  border-radius: 4px;
+  transition: background 0.15s;
+  line-height: 1;
+}
+#settings-btn:hover {
+  background: rgba(183, 165, 122, 0.2);
+}
+
+/* ---------- Sync Status Row ---------- */
+#sync-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: #5a3a94; /* slightly lighter purple */
+  padding: 6px 10px;
+  flex-shrink: 0;
+}
+
+.sync-pill {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(183, 165, 122, 0.3);
+  border-radius: 20px;
+  padding: 3px 10px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  font-size: 11px;
+  font-family: inherit;
+}
+.sync-pill:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.pill-paw {
+  font-size: 11px;
+  line-height: 1;
+}
+
+.pill-label {
+  color: #9d9db8; /* grey when unsynced */
+  font-weight: 500;
+  letter-spacing: 0.2px;
+}
+
+/* Synced state — gold text */
+.sync-pill.synced .pill-label {
+  color: #b7a57a;
+}
+.sync-pill.synced .pill-paw {
+  /* 🐾 shown via JS */
+}
+
+/* ---------- Main Body ---------- */
+#main-body {
+  display: flex;
+  flex: 1;
+  min-height: 0; /* allow flex children to scroll */
+  overflow: hidden;
+}
+
+/* ---------- Left Sidebar ---------- */
+#sidebar {
+  width: 90px;
+  min-width: 90px;
+  background: #4b2e83;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 6px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  flex-shrink: 0;
+}
+
+#sidebar-label {
+  font-size: 9px;
+  font-weight: 700;
+  color: #b7a57a;
+  letter-spacing: 1.2px;
+  text-align: center;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+#unplanned-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Course chip in sidebar */
+.course-chip {
+  background: #b7a57a;
+  color: #2d1a5e;
+  border-radius: 6px;
+  padding: 4px 5px;
+  font-size: 9.5px;
+  font-weight: 700;
+  text-align: center;
+  cursor: grab;
+  user-select: none;
+  line-height: 1.3;
+  transition: opacity 0.15s, transform 0.1s;
+  word-break: break-word;
+}
+.course-chip:hover {
+  opacity: 0.85;
+  transform: scale(1.04);
+}
+.course-chip.dragging {
+  opacity: 0.4;
+  cursor: grabbing;
+}
+
+/* Empty sidebar message */
+.sidebar-empty {
+  color: rgba(183, 165, 122, 0.5);
+  font-size: 10px;
+  text-align: center;
+  line-height: 1.5;
+  padding: 8px 4px;
+}
+
+/* ---------- Planner Grid ---------- */
+#planner-grid {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  gap: 12px;
+  padding: 10px 10px 10px 10px;
+  overflow-x: auto;
+  overflow-y: auto;
+  background: #f8f6ff;
+  align-items: flex-start;
+}
+
+/* Custom scrollbar for grid */
+#planner-grid::-webkit-scrollbar {
+  height: 5px;
+  width: 5px;
+}
+#planner-grid::-webkit-scrollbar-track {
+  background: #ede9f9;
+}
+#planner-grid::-webkit-scrollbar-thumb {
+  background: #b7a57a;
+  border-radius: 4px;
+}
+
+/* ---------- Quarter Column ---------- */
+.quarter-col {
+  min-width: 148px;
+  width: 148px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.quarter-header {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding-bottom: 4px;
+  border-bottom: 2px solid #4b2e83;
+  margin-bottom: 2px;
+}
+
+.quarter-name {
+  font-size: 11px;
+  font-weight: 700;
+  color: #4b2e83;
+  letter-spacing: 0.3px;
+}
+
+.quarter-credits {
+  font-size: 10px;
+  color: #b7a57a;
+  font-weight: 600;
+}
+
+/* Drop zone within each column */
+.quarter-drop-zone {
+  min-height: 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  border-radius: 6px;
+  transition: background 0.15s;
+  padding: 2px;
+}
+
+.quarter-drop-zone.drag-over {
+  background: rgba(75, 46, 131, 0.08);
+  outline: 2px dashed #b7a57a;
+  outline-offset: 1px;
+}
+
+/* ---------- Course Cards ---------- */
+.course-card {
+  background: #ffffff;
+  border-radius: 8px;
+  box-shadow: 0 1px 4px rgba(75, 46, 131, 0.12);
+  padding: 7px 8px 6px 8px;
+  border-left: 8px solid #22c55e; /* default green */
+  cursor: grab;
+  user-select: none;
+  position: relative;
+  transition: box-shadow 0.15s, transform 0.1s;
+}
+.course-card:hover {
+  box-shadow: 0 3px 10px rgba(75, 46, 131, 0.2);
+  transform: translateY(-1px);
+}
+.course-card.dragging {
+  opacity: 0.4;
+  cursor: grabbing;
+}
+
+/* Border color variants */
+.course-card.difficulty-green  { border-left-color: #22c55e; }
+.course-card.difficulty-amber  { border-left-color: #f59e0b; }
+.course-card.difficulty-red    { border-left-color: #ef4444; }
+
+.card-top-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 4px;
+  margin-bottom: 2px;
+}
+
+.card-code {
+  font-size: 12px;
+  font-weight: 700;
+  color: #1a1a2e;
+  line-height: 1.2;
+}
+
+.card-credit-pill {
+  background: #4b2e83;
+  color: #ffffff;
+  border-radius: 10px;
+  padding: 1px 5px;
+  font-size: 9px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.card-name {
+  font-size: 9.5px;
+  color: #6b6b8a;
+  line-height: 1.3;
+  margin-bottom: 5px;
+  /* truncate long names */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Progress bar */
+.card-progress-bar {
+  height: 3px;
+  background: #e8e4f4;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.card-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: #22c55e;
+  transition: width 0.3s;
+}
+.difficulty-amber .card-progress-fill { background: #f59e0b; }
+.difficulty-red   .card-progress-fill { background: #ef4444; }
+
+.card-progress-pct {
+  font-size: 8.5px;
+  color: #9d9db8;
+  margin-top: 2px;
+  text-align: right;
+}
+
+/* ---------- Overload Warning Chip ---------- */
+.overload-warning {
+  background: #fef2f2;
+  border: 1px solid #ef4444;
+  color: #b91c1c;
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 9.5px;
+  font-weight: 600;
+  text-align: center;
+  margin-top: 2px;
+}
+
+/* ---------- Empty State ---------- */
+#empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  padding: 20px;
+  text-align: center;
+  color: #6b6b8a;
+  font-size: 12px;
+  line-height: 1.6;
+  gap: 8px;
+}
+
+#empty-state .empty-icon {
+  font-size: 28px;
+}
+
+/* ---------- Footer ---------- */
+#footer {
+  background: #f8f6ff;
+  text-align: center;
+  font-size: 10px;
+  color: #9d9db8;
+  padding: 4px 0;
+  border-top: 1px solid #e8e4f4;
+  flex-shrink: 0;
+  letter-spacing: 0.3px;
+}
+
+/* ---------- Mascot (Dubs) ---------- */
+#mascot-wrapper {
+  position: absolute;
+  bottom: 26px;
+  right: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  pointer-events: none;
+  z-index: 100;
+}
+
+#mascot-img {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: 3px solid #b7a57a;
+  object-fit: cover;
+  display: block;
+  pointer-events: all;
+  cursor: default;
+  box-shadow: 0 2px 8px rgba(75, 46, 131, 0.25);
+}
+
+#speech-bubble {
+  background: #ffffff;
+  border: 1.5px solid #b7a57a;
+  border-radius: 10px;
+  padding: 5px 8px;
+  max-width: 120px;
+  font-size: 10px;
+  color: #4b2e83;
+  line-height: 1.4;
+  text-align: center;
+  box-shadow: 0 1px 5px rgba(75, 46, 131, 0.12);
+  position: relative;
+  word-break: break-word;
+}
+
+/* Speech bubble tail pointing downward toward mascot */
+#speech-bubble::after {
+  content: '';
+  position: absolute;
+  bottom: -7px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 7px solid #b7a57a;
+}
+#speech-bubble::before {
+  content: '';
+  position: absolute;
+  bottom: -5px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 6px solid #ffffff;
+  z-index: 1;
+}
+
+/* ---------- Sidebar Scrollbar ---------- */
+#sidebar::-webkit-scrollbar {
+  width: 3px;
+}
+#sidebar::-webkit-scrollbar-thumb {
+  background: rgba(183, 165, 122, 0.4);
+  border-radius: 2px;
+}

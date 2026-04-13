@@ -1,0 +1,66 @@
+{
+  "manifest_version": 3,
+  "name": "PawPath",
+  "version": "1.0.0",
+  "description": "UW Seattle student degree planner — drag, drop, and plan your quarters.",
+
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "PawPath",
+    "default_icon": {
+      "16": "images/smile.png",
+      "48": "images/smile.png",
+      "128": "images/smile.png"
+    }
+  },
+
+  "icons": {
+    "16": "images/smile.png",
+    "48": "images/smile.png",
+    "128": "images/smile.png"
+  },
+
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+
+  "host_permissions": [
+    "https://www.ratemyprofessors.com/*",
+    "https://myplan.uw.edu/*",
+    "https://myuw.uw.edu/*",
+    "https://dawgpath.uw.edu/*",
+    "https://www.washington.edu/students/timeschd/*"
+  ],
+
+  "background": {
+    "service_worker": "background.js"
+  },
+
+  "content_scripts": [
+    {
+      "matches": [
+        "https://myplan.uw.edu/*",
+        "https://myuw.uw.edu/*"
+      ],
+      "js": ["content-scripts/degree-audit.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://dawgpath.uw.edu/*"
+      ],
+      "js": ["content-scripts/dawgpath.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.washington.edu/students/timeschd/*",
+        "https://www.washington.edu/students/timeschd*"
+      ],
+      "js": ["content-scripts/timeschedule.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
