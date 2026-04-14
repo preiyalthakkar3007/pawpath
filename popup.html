@@ -15,39 +15,100 @@
     <button id="settings-btn" title="Settings">⚙️</button>
   </header>
 
-  <!-- ===== SYNC STATUS ROW ===== -->
+  <!-- ===== SYNC STATUS PILLS ===== -->
   <div id="sync-row">
-    <button class="sync-pill" id="pill-myplan" title="Sync from MyPlan">
-      <span class="pill-paw">⬜</span>
-      <span class="pill-label">MyPlan</span>
+    <button class="sync-pill" id="pill-myplan"       title="Sync from MyPlan">
+      <span class="pill-paw">⬜</span><span class="pill-label">MyPlan</span>
     </button>
-    <button class="sync-pill" id="pill-dawgpath" title="Sync from DawgPath">
-      <span class="pill-paw">⬜</span>
-      <span class="pill-label">DawgPath</span>
+    <button class="sync-pill" id="pill-dawgpath"     title="Sync from DawgPath">
+      <span class="pill-paw">⬜</span><span class="pill-label">DawgPath</span>
     </button>
     <button class="sync-pill" id="pill-timeschedule" title="Sync from Time Schedule">
-      <span class="pill-paw">⬜</span>
-      <span class="pill-label">Time Schedule</span>
+      <span class="pill-paw">⬜</span><span class="pill-label">Time Schedule</span>
     </button>
   </div>
 
-  <!-- ===== MAIN BODY (sidebar + planner grid) ===== -->
-  <div id="main-body">
+  <!-- ===== QUARTER WORKLOAD SUMMARY ===== -->
+  <!-- Always visible; shows current quarter load and avg difficulty. -->
+  <div id="workload-bar">
+    <div class="wl-left">
+      <span id="wl-quarter">--</span>
+      <span class="wl-sep">·</span>
+      <span id="wl-credits">-- cr</span>
+    </div>
+    <div class="wl-right">
+      <span class="wl-label">Quarter avg 4.0%</span>
+      <span id="wl-avg" class="wl-avg-val">--</span>
+    </div>
+  </div>
 
-    <!-- LEFT SIDEBAR: unplanned courses -->
-    <aside id="sidebar">
-      <div id="sidebar-label">UNPLANNED</div>
-      <div id="unplanned-list">
-        <!-- Course chips injected by popup.js -->
-      </div>
-    </aside>
+  <!-- ===== SEARCH ===== -->
+  <div id="search-area">
+    <div id="search-row">
+      <input id="search-input"
+             type="text"
+             placeholder="Search a course… (e.g. INFO 340)"
+             autocomplete="off"
+             spellcheck="false" />
+      <button id="search-btn" aria-label="Search">→</button>
+    </div>
+    <div id="search-error" class="hidden">Invalid course code</div>
+  </div>
 
-    <!-- PLANNER GRID: horizontally scrollable quarter columns -->
-    <div id="planner-grid">
-      <!-- Quarter columns injected by popup.js -->
+  <!-- ===== QUARTER SELECTOR ===== -->
+  <div id="quarter-row">
+    <!-- pills injected by popup.js -->
+  </div>
+
+  <!-- ===== CONTENT AREA (flex-fill between search and footer) ===== -->
+  <div id="content-area">
+
+    <!-- Default / empty state — shown until first search -->
+    <div id="empty-state">
+      <span id="empty-icon">🔍</span>
+      <span id="empty-msg">Search a course to see difficulty, professors, and open sections</span>
     </div>
 
-  </div>
+    <!-- Results card — revealed after a successful search -->
+    <div id="results-card" hidden>
+
+      <!-- Course badge row -->
+      <div id="results-header-row">
+        <span id="res-code-badge"></span>
+        <span id="res-name-text"></span>
+      </div>
+
+      <!-- Three information columns -->
+      <div id="results-body">
+
+        <!-- Column 1: DawgPath difficulty -->
+        <div class="result-col" id="col-difficulty">
+          <div class="col-label">DawgPath Difficulty</div>
+          <div class="col-body" id="diff-body">
+            <!-- populated by popup.js -->
+          </div>
+        </div>
+
+        <!-- Column 2: RateMyProfessor ratings -->
+        <div class="result-col" id="col-professors">
+          <div class="col-label">Rate My Professor</div>
+          <div class="col-body" id="prof-body">
+            <!-- populated by popup.js -->
+          </div>
+        </div>
+
+        <!-- Column 3: UW Time Schedule sections -->
+        <div class="result-col" id="col-sections">
+          <div class="col-label">Available Sections</div>
+          <div class="col-body" id="sect-body">
+            <!-- populated by popup.js -->
+          </div>
+        </div>
+
+      </div><!-- /results-body -->
+    </div><!-- /results-card -->
+
+  </div><!-- /content-area -->
 
   <!-- ===== FOOTER ===== -->
   <footer id="footer">PawPath · UW Seattle</footer>
@@ -55,7 +116,7 @@
   <!-- ===== DUBS MASCOT ===== -->
   <div id="mascot-wrapper">
     <div id="speech-bubble">
-      <span id="speech-text">Loading your plan... 🐾</span>
+      <span id="speech-text">What course are we checking? 🐾</span>
     </div>
     <img id="mascot-img" src="images/smile.png" alt="Dubs the husky mascot" />
   </div>

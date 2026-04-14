@@ -1,174 +1,583 @@
 // ============================================================
-// PawPath — popup.js
-// Entry point: loads state from chrome.storage.local, renders
-// the planner grid, sidebar, and mascot, and wires up drag-and-drop.
+// PawPath — popup.js  (Course Decision Tool)
+//
+// Flow:
+//  1. On open: load storage, render workload summary, set mascot.
+//  2. User types a course code + presses Enter / clicks →
+//  3. Difficulty appears immediately from chrome.storage.local.
+//  4. Time Schedule is fetched to get sections + instructor names.
+//  5. RMP ratings are fetched per instructor via background.js.
+//  6. All three columns render as data arrives; mascot reacts to
+//     the searched course's 4.0 rate.
 // ============================================================
 
-// ---------- Constants ----------
+'use strict';
 
-// Quarter names shown in the planner (6 starting from current)
-const QUARTER_ORDER = ['Autumn', 'Winter', 'Spring', 'Summer'];
+// ---- Constants ----
 
-// Difficulty thresholds for card border color
-const DIFF_GREEN = 70;  // >= 70% 4.0 rate → green
-const DIFF_AMBER = 40;  // 40-69%          → amber
-                         // < 40%           → red
+const UW_SCHOOL_ID = 'U2Nob29sLTE1MzA=';   // base64("School-1530")
+const UW_SCHOOL_NUM = '1530';                // numeric ID for RMP search URLs
 
-// Mascot states and their speech bubbles
-const MASCOT_STATES = {
-  dead:     { img: 'dead.png',     msg: 'I... I can\'t even... 💀' },
-  stunned:  { img: 'stunned.png',  msg: 'TWENTY credits?! 😵' },
-  cry:      { img: 'cry.png',      msg: 'Please, drop something... 😭' },
-  sad:      { img: 'sad.png',      msg: 'This looks rough... 😢' },
-  tired:    { img: 'tired.png',    msg: 'Heavy quarter ahead... 😮‍💨' },
-  confused: { img: 'confused.png', msg: 'Something seems off! 🤔' },
-  cool:     { img: 'cool.png',     msg: 'Easy quarter, let\'s goooo 😎' },
-  smile:    { img: 'smile.png',    msg: 'I believe in you! 🐾' },
+const QUARTER_URL_CODE = { Autumn: 'AUT', Winter: 'WIN', Spring: 'SPR', Summer: 'SUM' };
+const QUARTER_START_MONTH = { Autumn: 9, Winter: 1, Spring: 4, Summer: 7 };
+const QUARTER_ORDER = ['Winter', 'Spring', 'Summer', 'Autumn'];
+
+// Mascot reactions to a course's 4.0 rate (checked in order, highest first)
+const COURSE_MASCOT_STATES = [
+  { minPct: 50,  img: 'cool.png',    msg: 'Easy A potential 😎' },
+  { minPct: 35,  img: 'smile.png',   msg: 'Manageable! 🐾' },
+  { minPct: 20,  img: 'tired.png',   msg: 'Gonna need to study... 😫' },
+  { minPct: 10,  img: 'sad.png',     msg: 'Buckle up 😢' },
+  { minPct: 0,   img: 'dead.png',    msg: 'You sure about this? 💀' },
+];
+
+// Default (no course searched or no difficulty data)
+const DEFAULT_MASCOT = { img: 'smile.png', msg: 'What course are we checking? 🐾' };
+
+// ---- Minimal app state ----
+const state = {
+  plannedCourses: {},
+  detectedQuarter: null,
+  selectedQuarter: null,   // quarter the user has selected in the pill row
+  lastParsed: null,        // last successfully parsed course (for re-fetching on quarter change)
+  syncStatus: {},
 };
 
-// Storage keys
-const KEY_UNPLANNED  = 'unplannedCourses';   // [{courseCode, courseName, credits}]
-const KEY_DIFFICULTY = 'difficultyData';      // {courseCode: percentage}
-const KEY_PLANNER    = 'plannerState';        // {quarterId: [courseCode, ...]}
-const KEY_SYNC       = 'syncStatus';          // {myplan, dawgpath, timeschedule}
-
-// ---------- State (in-memory mirror of storage) ----------
-let state = {
-  unplanned:   [],    // array of course objects not yet assigned
-  difficulty:  {},    // courseCode → 4.0% number
-  planner:     {},    // quarterId  → [courseCode, ...]
-  allCourses:  {},    // courseCode → {courseCode, courseName, credits}
-  syncStatus:  { myplan: false, dawgpath: false, timeschedule: false },
-  quarters:    [],    // [{id, label, year}] — 6 quarters from now
-};
-
-// Track the dragged item so drop handlers know what's moving
-let dragInfo = null;  // { courseCode, sourceType: 'sidebar'|'quarter', sourceQuarter: id|null }
-
-// ---------- Initialisation ----------
+// ============================================================
+// Initialisation
+// ============================================================
 
 document.addEventListener('DOMContentLoaded', async () => {
-  await loadFromStorage();
-  state.quarters = buildQuarterList();
-  render();
-  wireSettingsButton();
+  // Load everything from storage in one round-trip
+  const data = await getStorage([
+    'plannedCourses', 'detectedQuarter', 'syncStatus',
+  ]);
+
+  state.plannedCourses  = data.plannedCourses  || {};
+  state.detectedQuarter = data.detectedQuarter || deriveQuarterFromDate();
+  state.selectedQuarter = { ...state.detectedQuarter };
+  state.syncStatus      = data.syncStatus      || {};
+
+  renderSyncPills();
+  renderWorkloadBar();
+  renderQuarterPills();
+  updateMascot(DEFAULT_MASCOT);
+
+  // Wire search input
+  document.getElementById('search-btn').addEventListener('click', onSearchClick);
+  document.getElementById('search-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') onSearchClick();
+  });
+
+  document.getElementById('settings-btn').addEventListener('click', () => {
+    alert(
+      'PawPath — Sync sources\n\n' +
+      '• myplan.uw.edu       → planned/registered courses\n' +
+      '• dawgpath.uw.edu     → 4.0% difficulty data\n' +
+      '• washington.edu/students/timeschd → RMP ratings'
+    );
+  });
 });
 
-// Load all relevant keys from chrome.storage.local
-async function loadFromStorage() {
+// ============================================================
+// Search entry point
+// ============================================================
+
+function onSearchClick() {
+  const raw    = document.getElementById('search-input').value;
+  const parsed = parseCourseInput(raw);
+  const errEl  = document.getElementById('search-error');
+
+  if (!parsed) {
+    errEl.classList.remove('hidden');
+    return;
+  }
+  errEl.classList.add('hidden');
+  doSearch(parsed);
+}
+
+async function doSearch(parsed) {
+  const { dept, num, code, deptUrl } = parsed;
+  state.lastParsed = parsed;
+  const q = state.selectedQuarter;
+
+  showResultsCard(code);
+  showColumnLoading('diff-body');
+  showColumnLoading('prof-body');
+  showColumnLoading('sect-body');
+
+  // DawgPath and Time Schedule fire concurrently; render each column
+  // independently as the data arrives.
+  const dawgPromise = fetchDawgPathData(code);
+  const tsPromise   = fetchTimeScheduleSections(deptUrl, num, q.quarter, q.year);
+
+  // Difficulty renders as soon as DawgPath responds
+  dawgPromise.then(dawgData => {
+    renderDifficultyColumn(dawgData);
+    updateMascotForDifficulty(dawgData ? computeFourOPct(dawgData) : null);
+  });
+
+  // Sections render as soon as Time Schedule responds, then RMP follows
+  const { sections, instructorNames } = await tsPromise;
+  renderSectionsColumn(sections, q);
+
+  const profResults = await fetchAllProfessorRatings(instructorNames);
+  renderProfessorsColumn(profResults);
+}
+
+// ============================================================
+// Difficulty column  (DawgPath API)
+// ============================================================
+
+// Fetch course data from the DawgPath public API.
+async function fetchDawgPathData(courseCode) {
+  const url = `https://dawgpath.uw.edu/api/v1/courses/${encodeURIComponent(courseCode)}`;
+  try {
+    const resp = await fetch(url, { credentials: 'omit' });
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch {
+    return null;
+  }
+}
+
+// Compute the % of students who earned a 4.0 from gpa_distro.
+// Returns a number (one decimal place) or null if no data.
+function computeFourOPct(data) {
+  const distro = data?.gpa_distro;
+  if (!Array.isArray(distro) || distro.length === 0) return null;
+  const total = distro.reduce((s, d) => s + (d.count ?? 0), 0);
+  if (total === 0) return null;
+  const fourO = distro.find(d => String(d.gpa) === '40')?.count ?? 0;
+  return Math.round((fourO / total) * 1000) / 10; // e.g. 44.7
+}
+
+function renderDifficultyColumn(data) {
+  const body = document.getElementById('diff-body');
+
+  if (!data) {
+    body.innerHTML = `
+      <div id="diff-no-data">
+        No DawgPath data<br>for this course yet.
+      </div>`;
+    return;
+  }
+
+  const pct      = computeFourOPct(data);
+  const pctStr   = pct !== null ? `${pct}%` : '--';
+  const cls      = pct === null ? 'diff-none'
+                 : pct >= 50   ? 'diff-green'
+                 : pct >= 20   ? 'diff-amber'
+                 :               'diff-red';
+  const barColor = pct === null ? '#c4b8e8'
+                 : pct >= 50   ? '#22c55e'
+                 : pct >= 20   ? '#f59e0b'
+                 :               '#ef4444';
+
+  const coi    = data.coi ?? null;
+  const coiStr = coi !== null
+    ? (coi >= 0 ? `+${coi.toFixed(2)}` : coi.toFixed(2))
+    : null;
+  const coiColor = coi === null ? '#9d9db8' : coi >= 0 ? '#22c55e' : '#ef4444';
+
+  const bottleneck = data.is_bottleneck === true;
+  const gateway    = data.is_gateway    === true;
+  const prereqs    = Array.isArray(data.prerequisites) ? data.prerequisites : [];
+
+  let html = `
+    <div id="diff-pct-big" class="${cls}">${escHtml(pctStr)}</div>
+    <div id="diff-sublabel">got a 4.0</div>
+    <div id="diff-bar-wrap">
+      <div id="diff-bar-fill" style="width:0%;background:${barColor}"></div>
+    </div>`;
+
+  if (coiStr !== null) {
+    html += `
+    <div class="diff-coi">
+      <span class="diff-coi-val" style="color:${coiColor}">${escHtml(coiStr)}</span>
+      <span class="diff-coi-label">Outcome Index</span>
+    </div>`;
+  }
+
+  if (bottleneck) html += `<div class="diff-badge diff-badge-warn">⚠️ Bottleneck</div>`;
+  if (gateway)    html += `<div class="diff-badge diff-badge-good">🚀 Gateway</div>`;
+
+  if (prereqs.length > 0) {
+    html += `
+    <div class="diff-prereqs">
+      <span class="diff-prereqs-label">Prereqs</span>
+      ${escHtml(prereqs.join(', '))}
+    </div>`;
+  }
+
+  html += `<div class="diff-attr"><a href="https://dawgpath.uw.edu" target="_blank">via DawgPath</a></div>`;
+
+  body.innerHTML = html;
+
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      const fill = body.querySelector('#diff-bar-fill');
+      if (fill && pct !== null) fill.style.width = `${pct}%`;
+    });
+  });
+}
+
+// ============================================================
+// Professors column
+// ============================================================
+
+// instructorNames: string[] from Time Schedule (normalised "F LastName")
+async function fetchAllProfessorRatings(instructorNames) {
+  const unique = [...new Set(instructorNames.filter(Boolean))];
+  if (unique.length === 0) return [];
+
+  const results = await Promise.allSettled(
+    unique.map(name => fetchProfessorRating(name))
+  );
+
+  return unique.map((name, i) => ({
+    name,
+    rating: results[i].status === 'fulfilled' ? results[i].value : null,
+  }));
+}
+
+function fetchProfessorRating(professorName) {
   return new Promise((resolve) => {
-    chrome.storage.local.get(
-      [KEY_UNPLANNED, KEY_DIFFICULTY, KEY_PLANNER, KEY_SYNC],
-      (result) => {
-        const unplanned  = result[KEY_UNPLANNED]  || [];
-        state.difficulty = result[KEY_DIFFICULTY] || {};
-        state.planner    = result[KEY_PLANNER]    || {};
-        state.syncStatus = result[KEY_SYNC]        || { myplan: false, dawgpath: false, timeschedule: false };
-
-        // Build a master lookup of all known courses
-        state.allCourses = {};
-        unplanned.forEach(c => { state.allCourses[c.courseCode] = c; });
-
-        // Also register any courses that exist only in planner quarters
-        Object.values(state.planner).flat().forEach(code => {
-          if (!state.allCourses[code]) {
-            state.allCourses[code] = { courseCode: code, courseName: '', credits: 0 };
-          }
-        });
-
-        // Unplanned = courses from storage not placed in any quarter
-        const plannedCodes = new Set(Object.values(state.planner).flat());
-        state.unplanned = unplanned.filter(c => !plannedCodes.has(c.courseCode));
-
-        resolve();
+    chrome.runtime.sendMessage(
+      { type: 'GET_RMP_RATING', professorName, schoolId: UW_SCHOOL_ID },
+      (response) => {
+        if (chrome.runtime.lastError) { resolve(null); return; }
+        resolve(response?.rating ?? null);
       }
     );
   });
 }
 
-// Save current state back to chrome.storage.local
-function saveToStorage() {
-  const unplannedFull = state.unplanned.map(c => state.allCourses[c.courseCode] || c);
-  chrome.storage.local.set({
-    [KEY_UNPLANNED]: [
-      ...unplannedFull,
-      // also save planned courses so we have full metadata
-      ...Object.values(state.planner).flat().map(code => state.allCourses[code]).filter(Boolean),
-    ],
-    [KEY_PLANNER]: state.planner,
-  });
-}
+function renderProfessorsColumn(profResults) {
+  const body = document.getElementById('prof-body');
 
-// ---------- Quarter Utilities ----------
-
-// Returns the current UW quarter based on today's date
-function getCurrentQuarter() {
-  const now   = new Date();
-  const month = now.getMonth() + 1; // 1-12
-  const year  = now.getFullYear();
-
-  let quarter;
-  if (month >= 9 && month <= 12)       quarter = 'Autumn';
-  else if (month >= 1 && month <= 3)   quarter = 'Winter';
-  else if (month >= 4 && month <= 6)   quarter = 'Spring';
-  else                                  quarter = 'Summer';
-
-  return { quarter, year };
-}
-
-// Build an ordered list of 6 quarters starting from the current one
-function buildQuarterList() {
-  const { quarter: startQ, year: startY } = getCurrentQuarter();
-  const quarters = [];
-  let qIdx = QUARTER_ORDER.indexOf(startQ);
-  let y    = startY;
-
-  for (let i = 0; i < 6; i++) {
-    const q = QUARTER_ORDER[qIdx];
-    quarters.push({ id: `${q}-${y}`, label: `${q} ${y}`, year: y });
-    qIdx++;
-    if (qIdx >= QUARTER_ORDER.length) { qIdx = 0; y++; }
-  }
-  return quarters;
-}
-
-// ---------- Difficulty Helpers ----------
-
-function getDifficultyClass(courseCode) {
-  const pct = state.difficulty[courseCode];
-  if (pct === undefined || pct === null) return 'difficulty-green'; // unknown → neutral green
-  if (pct >= DIFF_GREEN) return 'difficulty-green';
-  if (pct >= DIFF_AMBER) return 'difficulty-amber';
-  return 'difficulty-red';
-}
-
-function getDifficultyPct(courseCode) {
-  const pct = state.difficulty[courseCode];
-  if (pct === undefined || pct === null) return null;
-  return Math.round(pct);
-}
-
-// ---------- Render: Top-Level ----------
-
-function render() {
-  renderSyncPills();
-
-  // If MyPlan hasn't been synced yet and no planner data, show empty state
-  const hasAnyData = state.unplanned.length > 0 ||
-    Object.values(state.planner).some(arr => arr.length > 0);
-
-  if (!hasAnyData && !state.syncStatus.myplan) {
-    renderEmptyState();
-    updateMascot(null); // null → confused state
+  if (profResults.length === 0) {
+    body.innerHTML = `<div class="col-empty-msg">No instructor<br>info available.</div>`;
     return;
   }
 
-  renderSidebar();
-  renderGrid();
-  updateMascotFromGrid();
+  body.innerHTML = '';
+
+  profResults.forEach(({ name, rating }) => {
+    const row = document.createElement('div');
+    row.className = 'prof-row';
+
+    // Build the RMP search URL for this professor at UW
+    const searchUrl = `https://www.ratemyprofessors.com/search/professors/${UW_SCHOOL_NUM}?q=${encodeURIComponent(name)}`;
+    row.title = `Open RMP profile for ${name}`;
+    row.addEventListener('click', () => chrome.tabs.create({ url: searchUrl }));
+
+    if (!rating || rating.numRatings === 0) {
+      row.innerHTML = `
+        <div class="prof-name">
+          <span class="prof-name-text">${escHtml(name)}</span>
+        </div>
+        <span class="prof-no-rating">No ratings yet</span>`;
+    } else {
+      const stars     = rating.avgRating?.toFixed(1) ?? '?';
+      const diff      = rating.avgDifficulty?.toFixed(1) ?? '?';
+      const wta       = rating.wouldTakeAgainPercent !== null && rating.wouldTakeAgainPercent !== undefined
+                          ? Math.round(rating.wouldTakeAgainPercent) + '%'
+                          : '?';
+
+      row.innerHTML = `
+        <div class="prof-name">
+          <span class="prof-name-text">${escHtml(name)}</span>
+          <span class="prof-rating-badge">⭐ ${stars}</span>
+        </div>
+        <span class="prof-meta">Diff ${diff} · ${wta} again</span>`;
+    }
+
+    body.appendChild(row);
+  });
 }
 
-// ---------- Render: Sync Pills ----------
+// ============================================================
+// Sections column
+// ============================================================
+
+async function fetchTimeScheduleSections(deptUrl, courseNum, quarter, year) {
+  const qCode = (QUARTER_URL_CODE[quarter] ?? 'SPR') + year; // e.g. SPR2026
+  const url = `https://www.washington.edu/students/timeschd/pub/${qCode}/${deptUrl}.html`;
+
+  let html;
+  try {
+    const resp = await fetch(url, { credentials: 'omit' });
+    if (!resp.ok) return { sections: [], instructorNames: [] };
+    html = await resp.text();
+  } catch {
+    return { sections: [], instructorNames: [] };
+  }
+
+  return parseTimeScheduleHtml(html, courseNum);
+}
+
+// Parse the UW Time Schedule HTML for one course's sections.
+// UW page structure: <a name="NNN"> marks each course; section rows are
+// <tr> elements with a 5-digit SLN in the first cell.
+function parseTimeScheduleHtml(html, courseNum) {
+  const parser   = new DOMParser();
+  const doc      = parser.parseFromString(html, 'text/html');
+  const sections = [];
+  const instructorNamesRaw = [];
+
+  const numStr    = String(parseInt(courseNum, 10));       // "340"
+  const numPad3   = numStr.padStart(3, '0');               // "340"
+  const numPad4   = numStr.padStart(4, '0');               // "0340"
+  const numPad5   = numStr.padStart(5, '0');               // "00340"
+
+  // Strategy 1: find named anchor — UW uses various zero-padding conventions
+  let anchor =
+    doc.querySelector(`a[name="${numStr}"]`)   ||
+    doc.querySelector(`a[name="${numPad3}"]`)  ||
+    doc.querySelector(`a[name="${numPad4}"]`)  ||
+    doc.querySelector(`a[name="${numPad5}"]`)  ||
+    doc.querySelector(`a[name="${courseNum}"]`);
+
+  // Strategy 2: text-scan all numeric named anchors for one whose
+  // surrounding bold/heading text contains the course number
+  if (!anchor) {
+    for (const a of doc.querySelectorAll('a[name]')) {
+      const n = (a.getAttribute('name') ?? '').trim();
+      if (!/^\d+$/.test(n)) continue;
+      const parentText = (a.parentElement?.textContent ?? '');
+      // Match "INFO 340" or standalone " 340 " or opening "340"
+      if (new RegExp(`\\b${numStr}\\b`).test(parentText)) {
+        anchor = a;
+        break;
+      }
+    }
+  }
+
+  if (!anchor) return { sections, instructorNames: [] };
+
+  // Walk the document in DOM order; capture TR rows between this anchor
+  // and the next numeric named anchor (= the next course on the page).
+  const allEls    = [...doc.querySelectorAll('tr, a[name]')];
+  let capturing   = false;
+
+  for (const el of allEls) {
+    if (el === anchor) { capturing = true; continue; }
+    if (!capturing) continue;
+
+    // Stop at the next course anchor (numeric name, different from ours)
+    if (el.tagName === 'A') {
+      const n = (el.getAttribute('name') ?? '').trim();
+      if (/^\d+$/.test(n) && parseInt(n, 10) !== parseInt(numStr, 10)) break;
+      continue;
+    }
+
+    if (el.tagName !== 'TR') continue;
+    const cells = [...el.querySelectorAll('td')];
+    if (cells.length < 5) continue;
+
+    // Cell 0 contains the SLN (possibly inside an <a> tag, possibly with
+    // trailing section letter: "14476" or "14476 A")
+    const cell0Text = (cells[0]?.textContent ?? '').trim();
+    const slnMatch  = cell0Text.match(/^(\d{5})/);
+    if (!slnMatch) continue;
+    const sln = slnMatch[1];
+
+    // Detect whether the section letter is tacked onto cell 0
+    const combined = cell0Text.match(/^\d{5}\s+([A-Z]\w*)/);
+
+    let section, type, days, timeRaw, bldgRm, instructor, statusText;
+
+    if (combined) {
+      // Compact layout: 0:[SLN+Sect]  1:Cred  2:Type  3:Days  4:Time  5:Bldg  ...
+      section    = combined[1];
+      type       = (cells[1]?.textContent ?? '').trim().toUpperCase();
+      days       = (cells[2]?.textContent ?? '').trim();
+      timeRaw    = (cells[3]?.textContent ?? '').trim();
+      bldgRm     = buildBldgRoom(cells, 4);
+    } else {
+      // Standard layout: 0:SLN  1:Sect  2:Cred  3:Type  4:Days  5:Time  6:Bldg  ...
+      section    = (cells[1]?.textContent ?? '').trim();
+      type       = (cells[3]?.textContent ?? '').trim().toUpperCase();
+      days       = (cells[4]?.textContent ?? '').trim();
+      timeRaw    = (cells[5]?.textContent ?? '').trim();
+      bldgRm     = buildBldgRoom(cells, 6);
+    }
+
+    // Last two cells are always Status and Instructor
+    const lastIdx  = cells.length - 1;
+    instructor  = (cells[lastIdx]?.textContent ?? '').trim();
+    statusText  = (cells[lastIdx - 1]?.textContent ?? '').trim().toLowerCase();
+
+    // Confirm this looks like a real data row (section or instructor present)
+    if (!section && !instructor) continue;
+
+    let status = 'open';
+    if (/clos|cls|full/i.test(statusText))      status = 'closed';
+    else if (/res|add\s*code/i.test(statusText)) status = 'res';
+
+    sections.push({
+      sln,
+      section,
+      type: type || 'LEC',
+      days,
+      time: formatUWTime(timeRaw),
+      bldgRm,
+      instructor,
+      status,
+    });
+
+    if (instructor && !/^(to be|arr|staff|tba)/i.test(instructor)) {
+      instructorNamesRaw.push(instructor);
+    }
+  }
+
+  const instructorNames = [
+    ...new Set(instructorNamesRaw.map(normalizeInstructorName).filter(Boolean)),
+  ];
+
+  return { sections, instructorNames };
+}
+
+// Concatenate building + room cells (column 6 and possibly 7)
+function buildBldgRoom(cells, startIdx) {
+  const a = (cells[startIdx]?.textContent ?? '').trim();
+  const b = (cells[startIdx + 1]?.textContent ?? '').trim();
+  // Column 7 is a room number if it's digits only or starts with digits
+  if (b && /^\d/.test(b)) return `${a} ${b}`.trim();
+  return a;
+}
+
+function renderSectionsColumn(sections, quarter) {
+  const body = document.getElementById('sect-body');
+
+  if (sections.length === 0) {
+    const qLabel = `${quarter.quarter} ${quarter.year}`;
+    body.innerHTML = `<div class="col-empty-msg">No sections found<br>for ${qLabel}.</div>`;
+    return;
+  }
+
+  body.innerHTML = '';
+
+  sections.forEach(sec => {
+    const row = document.createElement('div');
+    row.className = 'section-row';
+
+    const dotClass = sec.status === 'open'   ? 'dot-open'
+                   : sec.status === 'closed' ? 'dot-closed'
+                   :                           'dot-res';
+
+    const instrDisplay = sec.instructor
+      ? formatInstructorForDisplay(sec.instructor)
+      : '';
+
+    row.innerHTML = `
+      <div class="section-top">
+        <span class="section-status-dot ${dotClass}"></span>
+        <span class="section-id">${escHtml(sec.section)}</span>
+        <span class="section-type">${escHtml(sec.type)}</span>
+      </div>
+      ${sec.days || sec.time
+        ? `<span class="section-time">${escHtml(sec.days)} ${escHtml(sec.time)}</span>`
+        : ''}
+      ${sec.bldgRm
+        ? `<span class="section-room">${escHtml(sec.bldgRm)}</span>`
+        : ''}
+      ${instrDisplay
+        ? `<span class="section-instructor">${escHtml(instrDisplay)}</span>`
+        : ''}`;
+
+    body.appendChild(row);
+  });
+}
+
+// ============================================================
+// Workload summary bar
+// ============================================================
+
+function renderWorkloadBar() {
+  const q = state.detectedQuarter;
+  if (!q) return;
+
+  const qLabel  = `${q.quarter} ${q.year}`;
+  const courses = state.plannedCourses?.[qLabel] ?? [];
+  const totalCr = courses.reduce((s, c) => s + (c.credits || 0), 0);
+
+  document.getElementById('wl-quarter').textContent = qLabel;
+  document.getElementById('wl-credits').textContent = totalCr ? `${totalCr} cr` : '-- cr';
+
+  // Difficulty avg is no longer cached locally; workload bar shows credits only.
+  const avgEl = document.getElementById('wl-avg');
+  avgEl.textContent = '--';
+  avgEl.className   = 'wl-avg-val';
+}
+
+// ============================================================
+// Quarter selector pills
+// ============================================================
+
+// Return `count` consecutive quarters starting from `base`.
+function computeNextQuarters(base, count = 4) {
+  const list = [];
+  let { quarter, year } = base;
+  for (let i = 0; i < count; i++) {
+    list.push({ quarter, year });
+    const idx = QUARTER_ORDER.indexOf(quarter);
+    if (idx === QUARTER_ORDER.length - 1) {
+      quarter = QUARTER_ORDER[0];
+      year++;
+    } else {
+      quarter = QUARTER_ORDER[idx + 1];
+    }
+  }
+  return list;
+}
+
+function renderQuarterPills() {
+  const row = document.getElementById('quarter-row');
+  row.innerHTML = '';
+
+  const quarters = computeNextQuarters(state.detectedQuarter, 4);
+  const sel = state.selectedQuarter;
+
+  quarters.forEach(({ quarter, year }) => {
+    const btn = document.createElement('button');
+    btn.className = 'quarter-pill';
+    // Short label: "Spr '26"
+    const shortQ = quarter.slice(0, 3);
+    const shortY = String(year).slice(2);
+    btn.textContent = `${shortQ} '${shortY}`;
+    btn.title = `${quarter} ${year}`;
+
+    if (sel && sel.quarter === quarter && sel.year === year) {
+      btn.classList.add('selected');
+    }
+
+    btn.addEventListener('click', () => {
+      state.selectedQuarter = { quarter, year };
+      renderQuarterPills();
+
+      // Re-fetch sections for the currently searched course, if any
+      if (state.lastParsed) {
+        showColumnLoading('sect-body');
+        fetchTimeScheduleSections(
+          state.lastParsed.deptUrl,
+          state.lastParsed.num,
+          quarter,
+          year
+        ).then(({ sections }) => {
+          renderSectionsColumn(sections, state.selectedQuarter);
+        });
+      }
+    });
+
+    row.appendChild(btn);
+  });
+}
+
+// ============================================================
+// Sync pills
+// ============================================================
 
 function renderSyncPills() {
   const pills = [
@@ -176,7 +585,6 @@ function renderSyncPills() {
     { id: 'pill-dawgpath',     key: 'dawgpath'     },
     { id: 'pill-timeschedule', key: 'timeschedule' },
   ];
-
   pills.forEach(({ id, key }) => {
     const el  = document.getElementById(id);
     const paw = el.querySelector('.pill-paw');
@@ -190,294 +598,174 @@ function renderSyncPills() {
   });
 }
 
-// ---------- Render: Empty State ----------
+// ============================================================
+// Mascot
+// ============================================================
 
-function renderEmptyState() {
-  // Replace grid content with the empty state message
-  const grid = document.getElementById('planner-grid');
-  grid.innerHTML = `
-    <div id="empty-state">
-      <span class="empty-icon">🐾</span>
-      <strong>No courses synced yet</strong>
-      Visit <em>MyPlan</em> first to sync your courses!
-    </div>
-  `;
-
-  // Sidebar also empty
-  const sidebar = document.getElementById('unplanned-list');
-  sidebar.innerHTML = '<div class="sidebar-empty">Visit<br>MyPlan<br>first!</div>';
-
-  updateMascot('confused');
-  document.getElementById('speech-text').textContent =
-    'Visit MyPlan first to sync your courses! 🐾';
-}
-
-// ---------- Render: Sidebar ----------
-
-function renderSidebar() {
-  const list = document.getElementById('unplanned-list');
-  list.innerHTML = '';
-
-  if (state.unplanned.length === 0) {
-    list.innerHTML = '<div class="sidebar-empty">All placed!</div>';
+// isQuarter: true when reacting to the overall quarter average (softer messaging)
+function updateMascotForDifficulty(pct, isQuarter = false) {
+  if (pct === null || pct === undefined) {
+    updateMascot(DEFAULT_MASCOT);
     return;
   }
 
-  state.unplanned.forEach(course => {
-    const chip = document.createElement('div');
-    chip.className = 'course-chip';
-    chip.textContent = course.courseCode;
-    chip.title = `${course.courseName} (${course.credits} cr)`;
-    chip.draggable = true;
-    chip.dataset.courseCode = course.courseCode;
-
-    // Drag events
-    chip.addEventListener('dragstart', (e) => onDragStart(e, course.courseCode, 'sidebar', null));
-    chip.addEventListener('dragend',   () => onDragEnd());
-
-    list.appendChild(chip);
-  });
-}
-
-// ---------- Render: Planner Grid ----------
-
-function renderGrid() {
-  const grid = document.getElementById('planner-grid');
-  grid.innerHTML = '';
-
-  state.quarters.forEach(q => {
-    const codes   = state.planner[q.id] || [];
-    const col     = buildQuarterColumn(q, codes);
-    grid.appendChild(col);
-  });
-}
-
-// Build a single quarter column DOM element
-function buildQuarterColumn(quarter, courseCodes) {
-  const totalCredits = courseCodes.reduce((sum, code) => {
-    return sum + (state.allCourses[code]?.credits || 0);
-  }, 0);
-
-  const redCount   = courseCodes.filter(c => getDifficultyClass(c) === 'difficulty-red').length;
-  const amberCount = courseCodes.filter(c => getDifficultyClass(c) === 'difficulty-amber').length;
-  const isOverload = totalCredits >= 18 || redCount >= 3;
-
-  const col = document.createElement('div');
-  col.className = 'quarter-col';
-  col.dataset.quarterId = quarter.id;
-
-  // Header
-  const header = document.createElement('div');
-  header.className = 'quarter-header';
-  header.innerHTML = `
-    <span class="quarter-name">${quarter.label}</span>
-    <span class="quarter-credits">${totalCredits} cr</span>
-  `;
-  col.appendChild(header);
-
-  // Drop zone
-  const dropZone = document.createElement('div');
-  dropZone.className = 'quarter-drop-zone';
-  dropZone.dataset.quarterId = quarter.id;
-
-  courseCodes.forEach(code => {
-    const card = buildCourseCard(code);
-    if (card) dropZone.appendChild(card);
-  });
-
-  // Overload warning chip
-  if (isOverload) {
-    const warn = document.createElement('div');
-    warn.className = 'overload-warning';
-    warn.textContent = '⚠️ Heavy quarter';
-    dropZone.appendChild(warn);
+  if (isQuarter) {
+    // Quieter reactions for overall quarter difficulty
+    if (pct >= 50) updateMascot({ img: 'cool.png',  msg: 'Solid quarter lineup 😎' });
+    else if (pct >= 35) updateMascot({ img: 'smile.png', msg: 'Looks manageable 🐾' });
+    else if (pct >= 20) updateMascot({ img: 'tired.png', msg: 'Tough quarter ahead 😮‍💨' });
+    else                updateMascot({ img: 'sad.png',   msg: 'This quarter is rough... 😢' });
+    return;
   }
 
-  // Wire drop zone events
-  dropZone.addEventListener('dragover',  (e) => onDragOver(e, dropZone));
-  dropZone.addEventListener('dragleave', ()  => onDragLeave(dropZone));
-  dropZone.addEventListener('drop',      (e) => onDrop(e, quarter.id));
-
-  col.appendChild(dropZone);
-  return col;
+  // Per-course reactions
+  const state_ = COURSE_MASCOT_STATES.find(s => pct >= s.minPct) ?? COURSE_MASCOT_STATES.at(-1);
+  updateMascot(state_);
 }
 
-// Build a course card DOM element
-function buildCourseCard(courseCode) {
-  const course    = state.allCourses[courseCode];
-  if (!course) return null;
+function updateMascot({ img, msg }) {
+  document.getElementById('mascot-img').src  = `images/${img}`;
+  document.getElementById('speech-text').textContent = msg;
+}
 
-  const diffClass = getDifficultyClass(courseCode);
-  const pct       = getDifficultyPct(courseCode);
+// ============================================================
+// UI helpers
+// ============================================================
 
-  const card = document.createElement('div');
-  card.className = `course-card ${diffClass}`;
-  card.draggable = true;
-  card.dataset.courseCode = courseCode;
+function showResultsCard(courseCode) {
+  document.getElementById('empty-state').style.display  = 'none';
+  document.getElementById('results-card').removeAttribute('hidden');
 
-  const pctDisplay = pct !== null ? `${pct}% got 4.0` : 'No data';
-  const barWidth   = pct !== null ? pct : 50;
+  document.getElementById('res-code-badge').textContent = courseCode;
+  document.getElementById('res-name-text').textContent  = '';   // filled in by diff data if available
 
-  card.innerHTML = `
-    <div class="card-top-row">
-      <span class="card-code">${course.courseCode}</span>
-      <span class="card-credit-pill">${course.credits || '?'}cr</span>
-    </div>
-    <div class="card-name">${course.courseName || '—'}</div>
-    <div class="card-progress-bar">
-      <div class="card-progress-fill" style="width:${barWidth}%"></div>
-    </div>
-    <div class="card-progress-pct">${pctDisplay}</div>
-  `;
-
-  card.addEventListener('dragstart', (e) => {
-    // Find which quarter this card is in
-    const zone = e.target.closest('.quarter-drop-zone');
-    const qId  = zone ? zone.dataset.quarterId : null;
-    onDragStart(e, courseCode, 'quarter', qId);
+  // Reset column bodies to empty while new data loads
+  ['diff-body', 'prof-body', 'sect-body'].forEach(id => {
+    document.getElementById(id).innerHTML = '';
   });
-  card.addEventListener('dragend', () => onDragEnd());
-
-  return card;
 }
 
-// ---------- Drag and Drop ----------
-
-function onDragStart(e, courseCode, sourceType, sourceQuarter) {
-  dragInfo = { courseCode, sourceType, sourceQuarter };
-  e.dataTransfer.effectAllowed = 'move';
-  e.dataTransfer.setData('text/plain', courseCode); // required for Firefox
-
-  // Add visual feedback after a microtask so the ghost image renders first
-  setTimeout(() => {
-    const el = e.target;
-    el.classList.add('dragging');
-  }, 0);
+// Insert shimmer loading placeholder into a column
+function showColumnLoading(bodyId) {
+  document.getElementById(bodyId).innerHTML = `
+    <div class="col-loading">
+      <div class="shimmer-line long"></div>
+      <div class="shimmer-line short"></div>
+      <div class="shimmer-line long"></div>
+      <div class="shimmer-line short"></div>
+    </div>`;
 }
 
-function onDragEnd() {
-  // Remove dragging class from all draggable items
-  document.querySelectorAll('.dragging').forEach(el => el.classList.remove('dragging'));
-  dragInfo = null;
+// ============================================================
+// Time / name formatting utilities
+// ============================================================
+
+// Convert UW Time Schedule time string "930-1020" → "9:30–10:20",
+// "1230-220P" → "12:30–2:20pm"
+function formatUWTime(raw) {
+  if (!raw) return '';
+  const t = raw.trim();
+  if (/^(arr|tba|to be)/i.test(t)) return 'TBA';
+
+  // Apply colon formatting: "930" → "9:30", "1230" → "12:30"
+  const addColon = (s) => s.replace(/^(\d{1,2})(\d{2})$/, '$1:$2');
+
+  const m = t.match(/^(\d{3,4})-(\d{3,4})(P?)$/i);
+  if (!m) return t;
+
+  const start = addColon(m[1]);
+  const end   = addColon(m[2]) + (m[3].toUpperCase() === 'P' ? 'pm' : '');
+  return `${start}–${end}`;
 }
 
-function onDragOver(e, dropZone) {
-  e.preventDefault();
-  e.dataTransfer.dropEffect = 'move';
-  dropZone.classList.add('drag-over');
-}
+// "BROCK,P" or "BROCK P" → "P Brock" (for RMP search)
+function normalizeInstructorName(raw) {
+  if (!raw) return null;
+  const s = raw.trim();
+  if (/^(to be|arr|staff|tba)/i.test(s)) return null;
 
-function onDragLeave(dropZone) {
-  dropZone.classList.remove('drag-over');
-}
-
-function onDrop(e, targetQuarterId) {
-  e.preventDefault();
-  const dropZone = e.currentTarget;
-  dropZone.classList.remove('drag-over');
-
-  if (!dragInfo) return;
-
-  const { courseCode, sourceType, sourceQuarter } = dragInfo;
-
-  // Remove from source
-  if (sourceType === 'sidebar') {
-    state.unplanned = state.unplanned.filter(c => c.courseCode !== courseCode);
-  } else if (sourceType === 'quarter' && sourceQuarter) {
-    state.planner[sourceQuarter] = (state.planner[sourceQuarter] || []).filter(c => c !== courseCode);
+  if (s.includes(',')) {
+    const [last, first] = s.split(',').map(p => p.trim());
+    return `${first.charAt(0)} ${toTitleCase(last)}`;
   }
-
-  // Add to target quarter
-  if (!state.planner[targetQuarterId]) state.planner[targetQuarterId] = [];
-  if (!state.planner[targetQuarterId].includes(courseCode)) {
-    state.planner[targetQuarterId].push(courseCode);
+  const parts = s.split(/\s+/);
+  if (parts.length >= 2) {
+    return `${parts[1].charAt(0)} ${toTitleCase(parts[0])}`;
   }
-
-  saveToStorage();
-  renderGrid();
-  renderSidebar();
-  updateMascotFromGrid();
+  return toTitleCase(s);
 }
 
-// Also allow dropping back to the sidebar
-(function wireSidebarDrop() {
-  // Wait for DOM
-  document.addEventListener('DOMContentLoaded', () => {
-    const sidebar = document.getElementById('sidebar');
-    sidebar.addEventListener('dragover',  (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; });
-    sidebar.addEventListener('drop',      (e) => {
-      e.preventDefault();
-      if (!dragInfo) return;
-      const { courseCode, sourceType, sourceQuarter } = dragInfo;
+// "BROCK P" → "Brock" (short display name for sections column)
+function formatInstructorForDisplay(raw) {
+  if (!raw) return '';
+  const s = raw.trim();
+  if (/^(to be|arr|staff|tba)/i.test(s)) return '';
 
-      // Remove from source quarter if applicable
-      if (sourceType === 'quarter' && sourceQuarter) {
-        state.planner[sourceQuarter] = (state.planner[sourceQuarter] || []).filter(c => c !== courseCode);
-      }
-
-      // Add back to unplanned if not already there
-      if (!state.unplanned.find(c => c.courseCode === courseCode)) {
-        const course = state.allCourses[courseCode];
-        if (course) state.unplanned.push(course);
-      }
-
-      saveToStorage();
-      renderGrid();
-      renderSidebar();
-      updateMascotFromGrid();
-    });
-  });
-})();
-
-// ---------- Mascot Logic ----------
-
-// Pick a mascot state based on the aggregate across ALL 6 quarters
-function computeGlobalMascotState() {
-  let maxCredits  = 0;
-  let totalRed    = 0;
-  let totalAmber  = 0;
-  let totalCourses = 0;
-
-  state.quarters.forEach(q => {
-    const codes   = state.planner[q.id] || [];
-    const credits = codes.reduce((s, c) => s + (state.allCourses[c]?.credits || 0), 0);
-    const red     = codes.filter(c => getDifficultyClass(c) === 'difficulty-red').length;
-    const amber   = codes.filter(c => getDifficultyClass(c) === 'difficulty-amber').length;
-    if (credits > maxCredits) maxCredits = credits;
-    totalRed    += red;
-    totalAmber  += amber;
-    totalCourses += codes.length;
-  });
-
-  // Worst-case mascot logic (ordered from worst to best)
-  if (maxCredits >= 20 && totalRed >= 3)       return 'dead';
-  if (maxCredits >= 20)                         return 'stunned';
-  if (maxCredits >= 18 && totalRed >= 2)        return 'cry';
-  if (totalRed >= 3 || (totalRed >= 2 && totalAmber >= 2)) return 'sad';
-  if (maxCredits >= 16 || totalAmber >= 3)      return 'tired';
-  if (totalCourses === 0)                       return 'confused';
-  if (maxCredits <= 12 && totalRed === 0 && totalAmber === 0) return 'cool';
-  return 'smile';
+  if (s.includes(',')) {
+    const [last, first] = s.split(',').map(p => p.trim());
+    return `${first.charAt(0)}. ${toTitleCase(last)}`;
+  }
+  const parts = s.split(/\s+/);
+  if (parts.length >= 2) {
+    return `${parts[1].charAt(0)}. ${toTitleCase(parts[0])}`;
+  }
+  return toTitleCase(s);
 }
 
-function updateMascotFromGrid() {
-  const key = computeGlobalMascotState();
-  updateMascot(key);
+function toTitleCase(str) {
+  return str.toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
 }
 
-function updateMascot(stateKey) {
-  const s   = stateKey ? MASCOT_STATES[stateKey] : MASCOT_STATES.confused;
-  const img = document.getElementById('mascot-img');
-  const txt = document.getElementById('speech-text');
-  img.src           = `images/${s.img}`;
-  txt.textContent   = s.msg;
+// Prevent XSS when injecting user-data strings into innerHTML
+function escHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
-// ---------- Settings ----------
+// ============================================================
+// Course input parsing
+// ============================================================
 
-function wireSettingsButton() {
-  document.getElementById('settings-btn').addEventListener('click', () => {
-    // Placeholder — could open an options page in the future
-    alert('PawPath Settings\n\nVisit the pages below to sync your courses:\n• myplan.uw.edu — course list\n• dawgpath.uw.edu — difficulty data\n• washington.edu/students/timeschd — RMP ratings');
-  });
+// Accepts: "INFO 340", "INFO340", "info340", "C LIT 240", "c& c 101"
+// Returns: { dept, num, code, deptUrl } or null
+function parseCourseInput(raw) {
+  if (!raw) return null;
+  const clean = raw.trim().toUpperCase().replace(/\s+/g, ' ');
+
+  // Match one or more letter/symbol groups (dept) followed by a course number
+  const m = clean.match(/^((?:[A-Z][A-Z&]* ?)+?)\s*(\d{1,3}[A-Z]?)$/);
+  if (!m) return null;
+
+  const dept    = m[1].trim();
+  const num     = m[2].trim();
+  const deptUrl = dept.toLowerCase().replace(/\s+/g, '').replace(/[^a-z]/g, '');
+
+  if (!deptUrl) return null;
+
+  return { dept, num, code: `${dept} ${num}`, deptUrl };
+}
+
+// ============================================================
+// Quarter utilities
+// ============================================================
+
+function deriveQuarterFromDate() {
+  const month = new Date().getMonth() + 1;
+  let quarter;
+  if      (month >= 9) quarter = 'Autumn';
+  else if (month >= 7) quarter = 'Summer';
+  else if (month >= 4) quarter = 'Spring';
+  else                 quarter = 'Winter';
+  return { quarter, year: new Date().getFullYear() };
+}
+
+// ============================================================
+// Storage helper
+// ============================================================
+
+function getStorage(keys) {
+  return new Promise(resolve => chrome.storage.local.get(keys, resolve));
 }

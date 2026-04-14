@@ -53,21 +53,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 // ---- RateMyProfessor GraphQL fetch ----
 
 async function fetchRmpRating(professorName, schoolNodeId) {
-  // Step 1: search for the professor by name at UW
-  const searchResult = await searchProfessor(professorName, schoolNodeId);
-  if (!searchResult) return null;
-
-  // Step 2: fetch the detailed rating using the professor's node ID
-  const detail = await fetchProfessorDetail(searchResult.id);
-  return detail;
-}
-
-// GraphQL query: search for a professor at a specific school
-async function searchProfessor(name, schoolNodeId) {
   const query = `
-    query TeacherSearchQuery($text: String!, $schoolID: ID) {
+    query NewSearchTeachersQuery($text: String!, $schoolID: ID!) {
       newSearch {
-        teachers(query: { text: $text, schoolID: $schoolID }, first: 1) {
+        teachers(query: { text: $text, schoolID: $schoolID }) {
           edges {
             node {
               id
@@ -77,6 +66,7 @@ async function searchProfessor(name, schoolNodeId) {
               avgDifficulty
               wouldTakeAgainPercent
               numRatings
+              department
             }
           }
         }
@@ -84,7 +74,7 @@ async function searchProfessor(name, schoolNodeId) {
     }
   `;
 
-  const variables = { text: name, schoolID: schoolNodeId };
+  const variables = { text: professorName, schoolID: schoolNodeId || UW_RMP_SCHOOL_NODE_ID };
 
   let data;
   try {
@@ -99,44 +89,12 @@ async function searchProfessor(name, schoolNodeId) {
   const node = edges[0].node;
   if (!node || node.numRatings === 0) return null;
 
-  return node; // contains id, avgRating, avgDifficulty, wouldTakeAgainPercent
-}
-
-// GraphQL query: fetch full professor detail by node ID
-// (In practice, the search query already returns what we need,
-//  so this is a lightweight pass-through of the search result.)
-async function fetchProfessorDetail(nodeId) {
-  const query = `
-    query TeacherRatingsPageQuery($id: ID!) {
-      node(id: $id) {
-        ... on Teacher {
-          id
-          firstName
-          lastName
-          avgRating
-          avgDifficulty
-          wouldTakeAgainPercent
-          numRatings
-        }
-      }
-    }
-  `;
-
-  let data;
-  try {
-    data = await graphqlRequest(query, { id: nodeId });
-  } catch (e) {
-    return null;
-  }
-
-  const teacher = data?.data?.node;
-  if (!teacher) return null;
-
   return {
-    avgRating:           teacher.avgRating,
-    avgDifficulty:       teacher.avgDifficulty,
-    wouldTakeAgainPercent: teacher.wouldTakeAgainPercent,
-    numRatings:          teacher.numRatings,
+    avgRating:             node.avgRating,
+    avgDifficulty:         node.avgDifficulty,
+    wouldTakeAgainPercent: node.wouldTakeAgainPercent,
+    numRatings:            node.numRatings,
+    department:            node.department ?? null,
   };
 }
 
