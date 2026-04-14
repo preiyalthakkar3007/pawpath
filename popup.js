@@ -114,7 +114,8 @@ async function doSearch(parsed) {
   // Difficulty renders as soon as DawgPath responds
   dawgPromise.then(dawgData => {
     renderDifficultyColumn(dawgData);
-    updateMascotForDifficulty(dawgData ? computeFourOPct(dawgData) : null);
+    const pct = (dawgData && !dawgData.error) ? computeFourOPct(dawgData) : null;
+    updateMascotForDifficulty(pct);
   });
 
   // Sections render as soon as Time Schedule responds, then RMP follows
@@ -131,15 +132,16 @@ async function doSearch(parsed) {
 
 // Fetch course data from the DawgPath API via the background service worker.
 // The background worker uses credentials:'include' to forward the browser's
-// existing UW SSO session cookie, bypassing the CORS/SSO redirect that
-// blocks direct fetches from the popup.
+// existing UW SSO session cookie. If the API returns [] the user isn't
+// logged in — background.js returns { error: 'not_authenticated' } in that case.
 function fetchDawgPathData(courseCode) {
   return new Promise(resolve => {
     chrome.runtime.sendMessage(
       { type: 'GET_DAWGPATH_DATA', courseCode },
       response => {
         if (chrome.runtime.lastError) { resolve(null); return; }
-        resolve(response?.data ?? null);
+        console.log('DawgPath raw response:', JSON.stringify(response));
+        resolve(response ?? null);
       }
     );
   });
@@ -148,18 +150,16 @@ function fetchDawgPathData(courseCode) {
 // Compute the % of students who earned a 4.0 from gpa_distro.
 // Returns a number (one decimal place) or null if no data.
 function computeFourOPct(data) {
-  const distro = data?.gpa_distro;
-  console.log('[PawPath] gpa_distro raw:', JSON.stringify(distro));
-  if (!Array.isArray(distro) || distro.length === 0) return null;
-  const total = distro.reduce((s, d) => s + (d.count ?? 0), 0);
-  if (total === 0) return null;
-  // gpa field may be a number (40) or a string ("40") or a decimal string ("4.0")
-  const fourO = distro.find(d =>
-    d.gpa === 40 || d.gpa === '40' || d.gpa === '4.0' || Number(d.gpa) === 40
-  )?.count ?? 0;
-  const pct = Math.round((fourO / total) * 1000) / 10;
-  console.log('[PawPath] fourO count:', fourO, '/ total:', total, '=> pct:', pct);
-  return pct;
+  console.log('gpa_distro full array:', JSON.stringify(data.gpa_distro));
+  const total = data.gpa_distro.reduce((sum, e) => sum + e.count, 0);
+  console.log('total count:', total);
+  const fortyEntry = data.gpa_distro.find(e => e.gpa === "40");
+  console.log('fortyEntry (string "40"):', fortyEntry);
+  const fortyEntryNum = data.gpa_distro.find(e => e.gpa === 40);
+  console.log('fortyEntry (number 40):', fortyEntryNum);
+  if (!fortyEntry && !fortyEntryNum) return null;
+  const entry = fortyEntry || fortyEntryNum;
+  return ((entry.count / total) * 100).toFixed(1);
 }
 
 function renderDifficultyColumn(data) {
@@ -169,6 +169,16 @@ function renderDifficultyColumn(data) {
     body.innerHTML = `
       <div id="diff-no-data">
         No DawgPath data<br>for this course yet.
+      </div>`;
+    return;
+  }
+
+  if (data.error === 'not_authenticated') {
+    body.innerHTML = `
+      <div id="diff-no-data">
+        <a href="https://dawgpath.uw.edu" target="_blank"
+           style="color:#9d7fe8;text-decoration:underline">Visit DawgPath</a>
+        to sign in, then<br>search again.
       </div>`;
     return;
   }
@@ -322,46 +332,36 @@ async function fetchTimeScheduleSections(deptUrl, courseNum, quarter, year) {
     console.log('[PawPath] Time Schedule status:', resp.status, resp.url);
     if (!resp.ok) return { sections: [], instructorNames: [] };
     html = await resp.text();
-    console.log('[PawPath] Time Schedule HTML (first 500):', html.slice(0, 500));
+    console.log('[PawPath] TS HTML preview:', html.substring(0, 5000));
   } catch (err) {
     console.log('[PawPath] Time Schedule fetch error:', err);
     return { sections: [], instructorNames: [] };
   }
 
-  return parseTimeScheduleHtml(html, courseNum);
+  return parseTimeScheduleHtml(html, deptUrl, courseNum);
 }
 
 // Parse the UW Time Schedule HTML for one course's sections.
-// UW page structure: <a name="NNN"> marks each course; section rows are
-// <tr> elements with a 5-digit SLN in the first cell.
-function parseTimeScheduleHtml(html, courseNum) {
+// UW page structure: <A NAME=info340> marks each course (dept lowercase + num,
+// no quotes, no padding). Section rows are <tr> elements with a 5-digit SLN.
+function parseTimeScheduleHtml(html, deptUrl, courseNum) {
   const parser   = new DOMParser();
   const doc      = parser.parseFromString(html, 'text/html');
   const sections = [];
   const instructorNamesRaw = [];
 
-  const numStr    = String(parseInt(courseNum, 10));       // "340"
-  const numPad3   = numStr.padStart(3, '0');               // "340"
-  const numPad4   = numStr.padStart(4, '0');               // "0340"
-  const numPad5   = numStr.padStart(5, '0');               // "00340"
+  // Anchor name format: lowercase dept (spaces stripped) + course number
+  // e.g. INFO 340 → "info340", ART H 300 → "arth300", CSE 143 → "cse143"
+  const anchorName = deptUrl + courseNum;  // deptUrl is already lowercased+stripped
 
-  // Strategy 1: find named anchor — UW uses various zero-padding conventions
-  let anchor =
-    doc.querySelector(`a[name="${numStr}"]`)   ||
-    doc.querySelector(`a[name="${numPad3}"]`)  ||
-    doc.querySelector(`a[name="${numPad4}"]`)  ||
-    doc.querySelector(`a[name="${numPad5}"]`)  ||
-    doc.querySelector(`a[name="${courseNum}"]`);
+  // Strategy 1: direct attribute match (browsers normalise unquoted NAME= to lowercase)
+  let anchor = doc.querySelector(`a[name="${anchorName}"]`);
 
-  // Strategy 2: text-scan all numeric named anchors for one whose
-  // surrounding bold/heading text contains the course number
+  // Strategy 2: case-insensitive scan (handles any capitalisation variation)
   if (!anchor) {
+    const target = anchorName.toLowerCase();
     for (const a of doc.querySelectorAll('a[name]')) {
-      const n = (a.getAttribute('name') ?? '').trim();
-      if (!/^\d+$/.test(n)) continue;
-      const parentText = (a.parentElement?.textContent ?? '');
-      // Match "INFO 340" or standalone " 340 " or opening "340"
-      if (new RegExp(`\\b${numStr}\\b`).test(parentText)) {
+      if ((a.getAttribute('name') ?? '').toLowerCase() === target) {
         anchor = a;
         break;
       }
@@ -369,82 +369,34 @@ function parseTimeScheduleHtml(html, courseNum) {
   }
 
   console.log('[PawPath] TS anchor found:', anchor ? anchor.outerHTML.slice(0, 120) : 'NOT FOUND',
-    '| numStr:', numStr, 'pad4:', numPad4);
+    '| looking for:', anchorName);
   if (!anchor) return { sections, instructorNames: [] };
 
-  // Walk the document in DOM order; capture TR rows between this anchor
-  // and the next numeric named anchor (= the next course on the page).
-  const allEls    = [...doc.querySelectorAll('tr, a[name]')];
-  let capturing   = false;
+  // The old UW Time Schedule HTML uses <pre> blocks (not tables) for section
+  // data. Walk <pre> and <a name> elements in document order; capture <pre>
+  // blocks between our anchor and the next course anchor for this dept.
+  const deptPrefix  = deptUrl.toLowerCase();
+  const allNodes    = [...doc.querySelectorAll('pre, a[name]')];
+  let capturing     = false;
 
-  for (const el of allEls) {
+  for (const el of allNodes) {
     if (el === anchor) { capturing = true; continue; }
     if (!capturing) continue;
 
-    // Stop at the next course anchor (numeric name, different from ours)
     if (el.tagName === 'A') {
-      const n = (el.getAttribute('name') ?? '').trim();
-      if (/^\d+$/.test(n) && parseInt(n, 10) !== parseInt(numStr, 10)) break;
+      const n = (el.getAttribute('name') ?? '').toLowerCase();
+      if (n.startsWith(deptPrefix) && n !== anchorName.toLowerCase()) break;
       continue;
     }
 
-    if (el.tagName !== 'TR') continue;
-    const cells = [...el.querySelectorAll('td')];
-    if (cells.length < 5) continue;
-
-    // Cell 0 contains the SLN (possibly inside an <a> tag, possibly with
-    // trailing section letter: "14476" or "14476 A")
-    const cell0Text = (cells[0]?.textContent ?? '').trim();
-    const slnMatch  = cell0Text.match(/^(\d{5})/);
-    if (!slnMatch) continue;
-    const sln = slnMatch[1];
-
-    // Detect whether the section letter is tacked onto cell 0
-    const combined = cell0Text.match(/^\d{5}\s+([A-Z]\w*)/);
-
-    let section, type, days, timeRaw, bldgRm, instructor, statusText;
-
-    if (combined) {
-      // Compact layout: 0:[SLN+Sect]  1:Cred  2:Type  3:Days  4:Time  5:Bldg  ...
-      section    = combined[1];
-      type       = (cells[1]?.textContent ?? '').trim().toUpperCase();
-      days       = (cells[2]?.textContent ?? '').trim();
-      timeRaw    = (cells[3]?.textContent ?? '').trim();
-      bldgRm     = buildBldgRoom(cells, 4);
-    } else {
-      // Standard layout: 0:SLN  1:Sect  2:Cred  3:Type  4:Days  5:Time  6:Bldg  ...
-      section    = (cells[1]?.textContent ?? '').trim();
-      type       = (cells[3]?.textContent ?? '').trim().toUpperCase();
-      days       = (cells[4]?.textContent ?? '').trim();
-      timeRaw    = (cells[5]?.textContent ?? '').trim();
-      bldgRm     = buildBldgRoom(cells, 6);
-    }
-
-    // Last two cells are always Status and Instructor
-    const lastIdx  = cells.length - 1;
-    instructor  = (cells[lastIdx]?.textContent ?? '').trim();
-    statusText  = (cells[lastIdx - 1]?.textContent ?? '').trim().toLowerCase();
-
-    // Confirm this looks like a real data row (section or instructor present)
-    if (!section && !instructor) continue;
-
-    let status = 'open';
-    if (/clos|cls|full/i.test(statusText))      status = 'closed';
-    else if (/res|add\s*code/i.test(statusText)) status = 'res';
-
-    sections.push({
-      sln,
-      section,
-      type: type || 'LEC',
-      days,
-      time: formatUWTime(timeRaw),
-      bldgRm,
-      instructor,
-      status,
-    });
-
-    if (instructor && !/^(to be|arr|staff|tba)/i.test(instructor)) {
-      instructorNamesRaw.push(instructor);
+    // Parse every line of the <pre> block
+    for (const line of el.textContent.split('\n')) {
+      const sec = parsePreSectionLine(line);
+      if (!sec) continue;
+      sections.push(sec);
+      if (sec.instructor && !/^(to be|arr|staff|tba)/i.test(sec.instructor)) {
+        instructorNamesRaw.push(sec.instructor);
+      }
     }
   }
 
@@ -463,6 +415,61 @@ function buildBldgRoom(cells, startIdx) {
   // Column 7 is a room number if it's digits only or starts with digits
   if (b && /^\d/.test(b)) return `${a} ${b}`.trim();
   return a;
+}
+
+// Parse one line from a UW Time Schedule <pre> block.
+// Example line (fixed-width, space-padded):
+//   "        15409 B  5   TTh  230-420    SAV  264    OPEN    35/ 35   Nancy Hertzog"
+// Returns a section object or null if the line isn't a section data row.
+function parsePreSectionLine(line) {
+  console.log('[PawPath] pre line:', JSON.stringify(line));
+  // Section lines have 5+ leading spaces then exactly a 5-digit SLN
+  const slnMatch = line.match(/^(\s{5,})(\d{5})\s/);
+  if (!slnMatch) return null;
+
+  const sln      = slnMatch[2];
+  const afterSln = line.slice(slnMatch[1].length + 5).trim();
+  if (!afterSln) return null;
+
+  const tokens = afterSln.split(/\s+/);
+  if (tokens.length < 3) return null;
+
+  // Positional tokens: section, credits, days, time, [building, room,] status, enroll, instructor...
+  const section = tokens[0];   // "B", "AA", "A"
+  // tokens[1] = credits — parsed but not displayed
+  const days    = tokens[2] ?? '';
+  const timeRaw = tokens[3] ?? '';
+
+  // Locate the status keyword to know where building/room end
+  const statusIdx = tokens.findIndex(t => /^(OPEN|CLOSED|Restr|AddCd|Full|Waitl)/i.test(t));
+  if (statusIdx < 0) return null;
+
+  // Tokens 4 and 5 are building + room when they exist before the status token
+  const building = statusIdx >= 5 ? tokens[4] : '';
+  const room     = statusIdx >= 6 ? tokens[5] : '';
+  const bldgRm   = [building, room].filter(Boolean).join(' ');
+
+  const statusRaw = tokens[statusIdx];
+  let status = 'open';
+  if (/clos|full|waitl/i.test(statusRaw))  status = 'closed';
+  else if (/restr|addcd/i.test(statusRaw)) status = 'res';
+
+  // Instructor follows status + enrollment tokens. Skip digits/slashes
+  // (enrollment like "35/", "35") and stray status keywords.
+  // A lone "O" token at the end is an "Online" delivery indicator, not a name.
+  let isOnline = false;
+  let i = statusIdx + 1;
+  while (i < tokens.length && (
+    /^[\d\/]+$/.test(tokens[i]) ||
+    /^(OPEN|CLOSED|Restr|AddCd|Full|Waitl)/i.test(tokens[i]) ||
+    tokens[i] === 'O'
+  )) {
+    if (tokens[i] === 'O') isOnline = true;
+    i++;
+  }
+  const instructor = tokens.slice(i).join(' ').trim();
+
+  return { sln, section, type: '', days, time: formatUWTime(timeRaw), bldgRm, instructor, isOnline, status };
 }
 
 function renderSectionsColumn(sections, quarter) {
@@ -502,6 +509,9 @@ function renderSectionsColumn(sections, quarter) {
         : ''}
       ${instrDisplay
         ? `<span class="section-instructor">${escHtml(instrDisplay)}</span>`
+        : ''}
+      ${sec.isOnline
+        ? `<span class="section-online">🌐 Online</span>`
         : ''}`;
 
     body.appendChild(row);

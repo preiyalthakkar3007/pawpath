@@ -52,23 +52,36 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const key = courseCode.toUpperCase();
 
     if (dawgCache.has(key)) {
-      sendResponse({ data: dawgCache.get(key) });
+      sendResponse(dawgCache.get(key));
       return false;
     }
 
     fetch(
       `https://dawgpath.uw.edu/api/v1/courses/${encodeURIComponent(courseCode)}`,
-      { credentials: 'include' }
+      {
+        credentials: 'include',
+        headers: {
+          'Accept': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+      }
     )
-      .then(resp => {
+      .then(async resp => {
+        console.log('[PawPath] DawgPath response status:', resp.status, resp.url);
         if (!resp.ok) throw new Error(resp.status);
         return resp.json();
       })
-      .then(data => {
-        dawgCache.set(key, data);
-        sendResponse({ data });
+      .then(json => {
+        // An empty array means the API returned no data — typically because
+        // the service worker's fetch doesn't share the browser's SSO session.
+        if (Array.isArray(json) && json.length === 0) {
+          sendResponse({ error: 'not_authenticated' });
+          return;
+        }
+        dawgCache.set(key, json);
+        sendResponse(json);
       })
-      .catch(() => sendResponse({ data: null }));
+      .catch(err => { console.log('[PawPath] DawgPath fetch error:', err); sendResponse(null); });
 
     return true; // keep channel open
   }

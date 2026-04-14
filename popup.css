@@ -585,6 +585,12 @@ body {
   text-overflow: ellipsis;
 }
 
+.section-online {
+  font-size: 9px;
+  color: #7dd3fc;
+  display: block;
+}
+
 .col-empty-msg {
   font-size: 10px;
   color: #b0a8cc;
