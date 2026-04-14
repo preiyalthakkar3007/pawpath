@@ -1,14 +1,15 @@
 // ============================================================
 // PawPath — background.js  (Manifest V3 Service Worker)
 //
-// Handles RateMyProfessor GraphQL API calls on behalf of content
-// scripts (avoids CORS restrictions in content-script context).
+// Handles cross-origin fetches on behalf of the popup:
 //
-// Message format received from content scripts:
-//   { type: 'GET_RMP_RATING', professorName: string, schoolId: string }
+//   GET_RMP_RATING   { professorName, schoolId }
+//     → { rating: { avgRating, avgDifficulty, wouldTakeAgainPercent, numRatings } | null }
 //
-// Response sent back:
-//   { rating: { avgRating, avgDifficulty, wouldTakeAgainPercent } | null }
+//   GET_DAWGPATH_DATA  { courseCode }
+//     → raw DawgPath API JSON object, or null on error
+//     Uses credentials:'include' to forward the browser's UW SSO session
+//     cookie, which avoids the CORS-breaking SSO redirect.
 // ============================================================
 
 'use strict';
@@ -20,34 +21,59 @@ const RMP_GRAPHQL_URL = 'https://www.ratemyprofessors.com/graphql';
 // This is the RMP internal ID for University of Washington.
 const UW_RMP_SCHOOL_NODE_ID = 'U2Nob29sLTE1MzA=';
 
-// Simple in-memory cache so repeated queries for the same professor
-// don't hit the network again within the same service-worker lifetime.
-const ratingCache = new Map(); // professorName → rating object or null
+// In-memory caches (live for the service-worker lifetime)
+const ratingCache  = new Map(); // professorName → rating | null
+const dawgCache    = new Map(); // courseCode    → data   | null
 
 // ---- Message listener ----
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message.type !== 'GET_RMP_RATING') return false;
+  if (message.type === 'GET_RMP_RATING') {
+    const { professorName, schoolId } = message;
+    const key = professorName.toLowerCase();
 
-  const { professorName, schoolId } = message;
-  const cacheKey = professorName.toLowerCase();
+    if (ratingCache.has(key)) {
+      sendResponse({ rating: ratingCache.get(key) });
+      return false;
+    }
 
-  if (ratingCache.has(cacheKey)) {
-    sendResponse({ rating: ratingCache.get(cacheKey) });
-    return false; // synchronous response
+    fetchRmpRating(professorName, schoolId || UW_RMP_SCHOOL_NODE_ID)
+      .then(rating => {
+        ratingCache.set(key, rating);
+        sendResponse({ rating });
+      })
+      .catch(() => sendResponse({ rating: null }));
+
+    return true; // keep channel open
   }
 
-  // Async fetch — must return true to keep the message channel open
-  fetchRmpRating(professorName, schoolId || UW_RMP_SCHOOL_NODE_ID)
-    .then(rating => {
-      ratingCache.set(cacheKey, rating);
-      sendResponse({ rating });
-    })
-    .catch(() => {
-      sendResponse({ rating: null });
-    });
+  if (message.type === 'GET_DAWGPATH_DATA') {
+    const { courseCode } = message;
+    const key = courseCode.toUpperCase();
 
-  return true; // keep channel open for async response
+    if (dawgCache.has(key)) {
+      sendResponse({ data: dawgCache.get(key) });
+      return false;
+    }
+
+    fetch(
+      `https://dawgpath.uw.edu/api/v1/courses/${encodeURIComponent(courseCode)}`,
+      { credentials: 'include' }
+    )
+      .then(resp => {
+        if (!resp.ok) throw new Error(resp.status);
+        return resp.json();
+      })
+      .then(data => {
+        dawgCache.set(key, data);
+        sendResponse({ data });
+      })
+      .catch(() => sendResponse({ data: null }));
+
+    return true; // keep channel open
+  }
+
+  return false; // unknown message type — don't hold the channel
 });
 
 // ---- RateMyProfessor GraphQL fetch ----

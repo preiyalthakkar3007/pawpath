@@ -129,16 +129,20 @@ async function doSearch(parsed) {
 // Difficulty column  (DawgPath API)
 // ============================================================
 
-// Fetch course data from the DawgPath public API.
-async function fetchDawgPathData(courseCode) {
-  const url = `https://dawgpath.uw.edu/api/v1/courses/${encodeURIComponent(courseCode)}`;
-  try {
-    const resp = await fetch(url, { credentials: 'omit' });
-    if (!resp.ok) return null;
-    return await resp.json();
-  } catch {
-    return null;
-  }
+// Fetch course data from the DawgPath API via the background service worker.
+// The background worker uses credentials:'include' to forward the browser's
+// existing UW SSO session cookie, bypassing the CORS/SSO redirect that
+// blocks direct fetches from the popup.
+function fetchDawgPathData(courseCode) {
+  return new Promise(resolve => {
+    chrome.runtime.sendMessage(
+      { type: 'GET_DAWGPATH_DATA', courseCode },
+      response => {
+        if (chrome.runtime.lastError) { resolve(null); return; }
+        resolve(response?.data ?? null);
+      }
+    );
+  });
 }
 
 // Compute the % of students who earned a 4.0 from gpa_distro.
