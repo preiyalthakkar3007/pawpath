@@ -149,11 +149,17 @@ function fetchDawgPathData(courseCode) {
 // Returns a number (one decimal place) or null if no data.
 function computeFourOPct(data) {
   const distro = data?.gpa_distro;
+  console.log('[PawPath] gpa_distro raw:', JSON.stringify(distro));
   if (!Array.isArray(distro) || distro.length === 0) return null;
   const total = distro.reduce((s, d) => s + (d.count ?? 0), 0);
   if (total === 0) return null;
-  const fourO = distro.find(d => String(d.gpa) === '40')?.count ?? 0;
-  return Math.round((fourO / total) * 1000) / 10; // e.g. 44.7
+  // gpa field may be a number (40) or a string ("40") or a decimal string ("4.0")
+  const fourO = distro.find(d =>
+    d.gpa === 40 || d.gpa === '40' || d.gpa === '4.0' || Number(d.gpa) === 40
+  )?.count ?? 0;
+  const pct = Math.round((fourO / total) * 1000) / 10;
+  console.log('[PawPath] fourO count:', fourO, '/ total:', total, '=> pct:', pct);
+  return pct;
 }
 
 function renderDifficultyColumn(data) {
@@ -311,10 +317,14 @@ async function fetchTimeScheduleSections(deptUrl, courseNum, quarter, year) {
 
   let html;
   try {
+    console.log('[PawPath] Time Schedule fetch:', url);
     const resp = await fetch(url, { credentials: 'omit' });
+    console.log('[PawPath] Time Schedule status:', resp.status, resp.url);
     if (!resp.ok) return { sections: [], instructorNames: [] };
     html = await resp.text();
-  } catch {
+    console.log('[PawPath] Time Schedule HTML (first 500):', html.slice(0, 500));
+  } catch (err) {
+    console.log('[PawPath] Time Schedule fetch error:', err);
     return { sections: [], instructorNames: [] };
   }
 
@@ -358,6 +368,8 @@ function parseTimeScheduleHtml(html, courseNum) {
     }
   }
 
+  console.log('[PawPath] TS anchor found:', anchor ? anchor.outerHTML.slice(0, 120) : 'NOT FOUND',
+    '| numStr:', numStr, 'pad4:', numPad4);
   if (!anchor) return { sections, instructorNames: [] };
 
   // Walk the document in DOM order; capture TR rows between this anchor
@@ -440,6 +452,7 @@ function parseTimeScheduleHtml(html, courseNum) {
     ...new Set(instructorNamesRaw.map(normalizeInstructorName).filter(Boolean)),
   ];
 
+  console.log('[PawPath] TS parsed sections:', sections.length, '| instructors:', instructorNames);
   return { sections, instructorNames };
 }
 
