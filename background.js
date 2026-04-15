@@ -22,6 +22,12 @@ const UW_RMP_SCHOOL_NODE_ID = 'U2Nob29sLTE1MzA=';
 // In-memory cache (lives for the service-worker lifetime)
 const ratingCache = new Map(); // professorName → rating | null
 
+// ---- Side panel ----
+
+chrome.action.onClicked.addListener((tab) => {
+  chrome.sidePanel.open({ windowId: tab.windowId });
+});
+
 // ---- Message listener ----
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {

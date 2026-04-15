@@ -5,13 +5,16 @@
   "description": "UW Seattle student degree planner — drag, drop, and plan your quarters.",
 
   "action": {
-    "default_popup": "popup.html",
     "default_title": "PawPath",
     "default_icon": {
       "16": "images/smile.png",
       "48": "images/smile.png",
       "128": "images/smile.png"
     }
+  },
+
+  "side_panel": {
+    "default_path": "popup.html"
   },
 
   "icons": {
@@ -23,7 +26,8 @@
   "permissions": [
     "storage",
     "activeTab",
-    "scripting"
+    "scripting",
+    "sidePanel"
   ],
 
   "host_permissions": [
@@ -31,7 +35,8 @@
     "https://myplan.uw.edu/*",
     "https://myuw.uw.edu/*",
     "https://dawgpath.uw.edu/*",
-    "https://www.washington.edu/students/timeschd/*"
+    "https://www.washington.edu/students/timeschd/*",
+    "https://course-app-api.planning.sis.uw.edu/*"
   ],
 
   "background": {
@@ -39,6 +44,11 @@
   },
 
   "content_scripts": [
+    {
+      "matches": ["https://myplan.uw.edu/*"],
+      "js": ["content-scripts/myplan-interceptor.js"],
+      "run_at": "document_start"
+    },
     {
       "matches": [
         "https://myplan.uw.edu/*",

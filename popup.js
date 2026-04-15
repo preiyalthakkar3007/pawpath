@@ -22,6 +22,17 @@ const QUARTER_URL_CODE = { Autumn: 'AUT', Winter: 'WIN', Spring: 'SPR', Summer: 
 const QUARTER_START_MONTH = { Autumn: 9, Winter: 1, Spring: 4, Summer: 7 };
 const QUARTER_ORDER = ['Winter', 'Spring', 'Summer', 'Autumn'];
 
+// MyPlan / SIS term ID suffix: Winter=1, Spring=2, Summer=3, Autumn=4
+// Full term ID = year + suffix, e.g. Spring 2026 → "20262"
+const MYPLAN_QUARTER_NUM = { Winter: '1', Spring: '2', Summer: '3', Autumn: '4' };
+
+// UW Time Schedule course-attribute codes that appear in the last column
+// and must never be treated as instructor names.
+const UW_ATTRIBUTE_CODES = new Set([
+  'W', 'I', 'O', 'VLPA', 'NW', 'QSR', 'DIV', 'IS',
+  'A&H', 'NSc', 'SSc', 'RSN', 'C', 'E',
+]);
+
 // Mascot reactions to a course's 4.0 rate (checked in order, highest first)
 const COURSE_MASCOT_STATES = [
   { minPct: 50,  img: 'cool.png',    msg: 'Easy A potential 😎' },
@@ -109,7 +120,7 @@ async function doSearch(parsed) {
   // DawgPath and Time Schedule fire concurrently; render each column
   // independently as the data arrives.
   const dawgPromise = fetchDawgPathData(code);
-  const tsPromise   = fetchTimeScheduleSections(deptUrl, num, q.quarter, q.year);
+  const tsPromise   = fetchTimeScheduleSections(deptUrl, num, code, q.quarter, q.year);
 
   // Difficulty renders as soon as DawgPath responds
   dawgPromise.then(dawgData => {
@@ -312,7 +323,7 @@ function renderProfessorsColumn(profResults) {
   const body = document.getElementById('prof-body');
 
   if (profResults.length === 0) {
-    body.innerHTML = `<div class="col-empty-msg">No instructor<br>info available.</div>`;
+    body.innerHTML = `<div class="col-empty-msg">Instructor TBA —<br>check Time Schedule.</div>`;
     return;
   }
 
@@ -356,24 +367,115 @@ function renderProfessorsColumn(profResults) {
 // Sections column
 // ============================================================
 
-async function fetchTimeScheduleSections(deptUrl, courseNum, quarter, year) {
-  const qCode = (QUARTER_URL_CODE[quarter] ?? 'SPR') + year; // e.g. SPR2026
-  const url = `https://www.washington.edu/students/timeschd/pub/${qCode}/${deptUrl}.html`;
+// Fetch Time Schedule HTML directly from the popup context using the public
+// /pub/ URL — no injection, no cookies required. This is the fallback path
+// when the MyPlan API is unavailable.
+async function fetchTimeScheduleHtml(url) {
+  const publicUrl = url.replace('/timeschd/', '/timeschd/pub/');
+  const r = await fetch(publicUrl);
+  return r.text();
+}
 
-  let html;
+// ---- MyPlan Schedule Builder API (primary source) ----
+
+// Reads course details cached by the myplan-interceptor content script.
+// The interceptor wraps window.fetch on myplan.uw.edu and writes every
+// /api/details response to chrome.storage.local under 'myplan_course_details'.
+// Returns { sections, instructorNames } or null (caller falls back to HTML scraper).
+async function fetchMyPlanSections(courseCode, quarter, year) {
+  const termId = `${year}${MYPLAN_QUARTER_NUM[quarter] ?? '2'}`;
+
   try {
-    console.log('[PawPath] Time Schedule fetch:', url);
-    const resp = await fetch(url, { credentials: 'omit' });
-    console.log('[PawPath] Time Schedule status:', resp.status, resp.url);
-    if (!resp.ok) return { sections: [], instructorNames: [] };
-    html = await resp.text();
+    // Get the courseId from the active MyPlan tab URL so we can verify the
+    // cached entry is for the right course.
+    const tabs    = await chrome.tabs.query({ url: 'https://myplan.uw.edu/*' });
+    const tabUrl  = tabs[0]?.url ?? '';
+    const idMatch = tabUrl.match(/[?&]id=([a-f0-9-]+)/);
+    const tabCourseId = idMatch?.[1] ?? null;
+    console.log('[PawPath] courseId from URL:', tabCourseId ?? 'none');
+
+    // Read cached details written by myplan-interceptor.js
+    const stored = await getStorage(['myplan_course_details']);
+    const cached = stored.myplan_course_details;
+
+    if (!cached?.data) {
+      console.log('[PawPath] No cached MyPlan details — open a course page on myplan.uw.edu first');
+      return null;
+    }
+
+    // If we have a courseId from the URL, verify the cache is for the same course
+    if (tabCourseId && cached.courseId && cached.courseId !== tabCourseId) {
+      console.log('[PawPath] Cached courseId mismatch:', cached.courseId, '≠', tabCourseId);
+      return null;
+    }
+
+    console.log('[PawPath] Using cached MyPlan details | courseId:', cached.courseId);
+    return mapMyPlanSections(cached.data, termId);
+  } catch (e) {
+    console.log('[PawPath] fetchMyPlanSections error:', e);
+    return null;
+  }
+}
+
+function mapMyPlanSections(apiData, termId) {
+  const termList  = apiData?.courseOfferingInstitutionList?.[0]?.courseOfferingTermList ?? [];
+  const termEntry = termList.find(t => t.yearTerm?.value === termId) ?? termList[0];
+  const items     = termEntry?.activityOfferingItemList ?? [];
+
+  const sections = items.map(item => {
+    const meeting = item.meetingDetailsList?.[0];
+    const bldgRm  = [meeting?.building, meeting?.room].filter(Boolean).join(' ');
+    return {
+      sln:         item.registrationCode ?? '',
+      section:     item.code ?? '',
+      type:        item.activityOfferingType ?? '',
+      days:        meeting?.days ?? '',
+      time:        meeting?.time ?? '',
+      bldgRm,
+      instructor:  item.instructor || null,
+      status:      item.enrollStatus === 'open'   ? 'open'
+                 : item.enrollStatus === 'closed' ? 'closed' : 'res',
+      isOnline:    item.onlineLearningText != null && item.onlineLearningText !== 'In-person',
+      primary:     item.primary ?? true,
+      enrollCount: item.enrollCount   ?? null,
+      enrollMax:   item.enrollMaximum ?? null,
+    };
+  });
+
+  const instructorNames = [
+    ...new Set(
+      sections
+        .map(s => s.instructor)
+        .filter(n => n && n.includes(' ') && !/^(to be|arr|staff|tba)/i.test(n))
+        .map(normalizeInstructorName)
+        .filter(Boolean)
+    ),
+  ];
+
+  return { sections, instructorNames };
+}
+
+// ---- Time Schedule HTML scraper (fallback) ----
+
+async function fetchTimeScheduleSections(deptUrl, courseNum, courseCode, quarter, year) {
+  // Primary: MyPlan Schedule Builder API (authenticated, includes instructors)
+  const myplanResult = await fetchMyPlanSections(courseCode, quarter, year);
+  if (myplanResult) return myplanResult;
+
+  // Fallback: UW Time Schedule HTML scraper
+  const qCode = (QUARTER_URL_CODE[quarter] ?? 'SPR') + year;
+  const url   = `https://www.washington.edu/students/timeschd/${qCode}/${deptUrl}.html`;
+  console.log('[PawPath] Time Schedule fallback fetch:', url);
+
+  try {
+    const html = await fetchTimeScheduleHtml(url);
+    if (!html) return { sections: [], instructorNames: [] };
     console.log('[PawPath] TS HTML preview:', html.substring(0, 5000));
+    return parseTimeScheduleHtml(html, deptUrl, courseNum);
   } catch (err) {
     console.log('[PawPath] Time Schedule fetch error:', err);
     return { sections: [], instructorNames: [] };
   }
-
-  return parseTimeScheduleHtml(html, deptUrl, courseNum);
 }
 
 // Parse the UW Time Schedule HTML for one course's sections.
@@ -489,20 +591,28 @@ function parsePreSectionLine(line) {
   if (/clos|full|waitl/i.test(statusRaw))  status = 'closed';
   else if (/restr|addcd/i.test(statusRaw)) status = 'res';
 
-  // Instructor follows status + enrollment tokens. Skip digits/slashes
-  // (enrollment like "35/", "35") and stray status keywords.
-  // A lone "O" token at the end is an "Online" delivery indicator, not a name.
-  let isOnline = false;
+  // Skip status + enrollment tokens (digits, slashes, stray status keywords)
   let i = statusIdx + 1;
   while (i < tokens.length && (
     /^[\d\/]+$/.test(tokens[i]) ||
-    /^(OPEN|CLOSED|Restr|AddCd|Full|Waitl)/i.test(tokens[i]) ||
-    tokens[i] === 'O'
-  )) {
-    if (tokens[i] === 'O') isOnline = true;
-    i++;
+    /^(OPEN|CLOSED|Restr|AddCd|Full|Waitl)/i.test(tokens[i])
+  )) i++;
+
+  // Collect remaining tokens, detecting online indicator and stripping
+  // UW course-attribute codes (W, VLPA, NW, QSR, etc.) that are not names.
+  let isOnline = false;
+  const nameParts = [];
+  for (let j = i; j < tokens.length; j++) {
+    const tok = tokens[j];
+    if (tok === 'O') { isOnline = true; continue; }
+    if (UW_ATTRIBUTE_CODES.has(tok))   continue;
+    nameParts.push(tok);
   }
-  const instructor = tokens.slice(i).join(' ').trim();
+
+  // A valid instructor name must be at least two words (first + last).
+  // Single tokens are attribute codes we haven't blocklisted or noise.
+  const raw        = nameParts.join(' ').trim();
+  const instructor = raw.includes(' ') ? raw : null;
 
   return { sln, section, type: '', days, time: formatUWTime(timeRaw), bldgRm, instructor, isOnline, status };
 }
@@ -632,6 +742,7 @@ function renderQuarterPills() {
         fetchTimeScheduleSections(
           state.lastParsed.deptUrl,
           state.lastParsed.num,
+          state.lastParsed.code,
           quarter,
           year
         ).then(({ sections }) => {
