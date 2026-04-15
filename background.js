@@ -6,10 +6,8 @@
 //   GET_RMP_RATING   { professorName, schoolId }
 //     → { rating: { avgRating, avgDifficulty, wouldTakeAgainPercent, numRatings } | null }
 //
-//   GET_DAWGPATH_DATA  { courseCode }
-//     → raw DawgPath API JSON object, or null on error
-//     Uses credentials:'include' to forward the browser's UW SSO session
-//     cookie, which avoids the CORS-breaking SSO redirect.
+// DawgPath fetches are handled directly in popup.js via
+// chrome.scripting.executeScript into an open DawgPath tab.
 // ============================================================
 
 'use strict';
@@ -21,9 +19,8 @@ const RMP_GRAPHQL_URL = 'https://www.ratemyprofessors.com/graphql';
 // This is the RMP internal ID for University of Washington.
 const UW_RMP_SCHOOL_NODE_ID = 'U2Nob29sLTE1MzA=';
 
-// In-memory caches (live for the service-worker lifetime)
-const ratingCache  = new Map(); // professorName → rating | null
-const dawgCache    = new Map(); // courseCode    → data   | null
+// In-memory cache (lives for the service-worker lifetime)
+const ratingCache = new Map(); // professorName → rating | null
 
 // ---- Message listener ----
 
@@ -43,45 +40,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({ rating });
       })
       .catch(() => sendResponse({ rating: null }));
-
-    return true; // keep channel open
-  }
-
-  if (message.type === 'GET_DAWGPATH_DATA') {
-    const { courseCode } = message;
-    const key = courseCode.toUpperCase();
-
-    if (dawgCache.has(key)) {
-      sendResponse(dawgCache.get(key));
-      return false;
-    }
-
-    fetch(
-      `https://dawgpath.uw.edu/api/v1/courses/${encodeURIComponent(courseCode)}`,
-      {
-        credentials: 'include',
-        headers: {
-          'Accept': 'application/json',
-          'X-Requested-With': 'XMLHttpRequest',
-        },
-      }
-    )
-      .then(async resp => {
-        console.log('[PawPath] DawgPath response status:', resp.status, resp.url);
-        if (!resp.ok) throw new Error(resp.status);
-        return resp.json();
-      })
-      .then(json => {
-        // An empty array means the API returned no data — typically because
-        // the service worker's fetch doesn't share the browser's SSO session.
-        if (Array.isArray(json) && json.length === 0) {
-          sendResponse({ error: 'not_authenticated' });
-          return;
-        }
-        dawgCache.set(key, json);
-        sendResponse(json);
-      })
-      .catch(err => { console.log('[PawPath] DawgPath fetch error:', err); sendResponse(null); });
 
     return true; // keep channel open
   }

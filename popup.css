@@ -533,6 +533,25 @@ body {
 }
 .section-row:last-child { border-bottom: none; }
 
+.section-child {
+  padding-left: 10px;
+  opacity: 0.82;
+}
+.section-child .section-id  { font-weight: 600; font-size: 9.5px; }
+.section-child .section-time,
+.section-child .section-room { font-size: 8.5px; }
+
+.section-child-prefix {
+  font-size: 8px;
+  color: #9d9db8;
+  margin-right: 3px;
+  line-height: 1;
+}
+
+.section-id-parent {
+  font-weight: 900;
+}
+
 .section-top {
   display: flex;
   align-items: center;
@@ -549,6 +568,14 @@ body {
 .dot-open   { background: #22c55e; }
 .dot-closed { background: #ef4444; }
 .dot-res    { background: #f59e0b; }
+
+.sect-legend {
+  font-size: 8.5px;
+  margin: 2px 0 4px;
+  letter-spacing: 0.02em;
+}
+.legend-open   { color: #22c55e; }
+.legend-closed { color: #ef4444; }
 
 .section-id {
   font-size: 10.5px;

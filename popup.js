@@ -130,20 +130,45 @@ async function doSearch(parsed) {
 // Difficulty column  (DawgPath API)
 // ============================================================
 
-// Fetch course data from the DawgPath API via the background service worker.
-// The background worker uses credentials:'include' to forward the browser's
-// existing UW SSO session cookie. If the API returns [] the user isn't
-// logged in — background.js returns { error: 'not_authenticated' } in that case.
-function fetchDawgPathData(courseCode) {
-  return new Promise(resolve => {
-    chrome.runtime.sendMessage(
-      { type: 'GET_DAWGPATH_DATA', courseCode },
-      response => {
-        if (chrome.runtime.lastError) { resolve(null); return; }
-        console.log('DawgPath raw response:', JSON.stringify(response));
-        resolve(response ?? null);
-      }
-    );
+// Fetch DawgPath data by injecting a fetch into an already-open DawgPath tab.
+// The injected script runs in the DawgPath page's context and inherits that
+// tab's UW SSO session cookies. Returns the course object or an error shape.
+async function fetchDawgPathData(courseCode) {
+  return new Promise(async (resolve) => {
+    const tabs = await chrome.tabs.query({ url: 'https://dawgpath.uw.edu/*' });
+    if (!tabs.length) {
+      resolve({ error: 'no_tab' });
+      return;
+    }
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tabs[0].id },
+        func: async (code) => {
+          try {
+            const r = await fetch(
+              `https://dawgpath.uw.edu/api/v1/courses/details/${encodeURIComponent(code)}`,
+              {
+                credentials: 'include',
+                headers: {
+                  'Accept': 'application/json',
+                  'X-Requested-With': 'XMLHttpRequest',
+                  'Referer': `https://dawgpath.uw.edu/course?id=${encodeURIComponent(code)}`,
+                },
+              }
+            );
+            const text = await r.text();
+            console.log('[PawPath injected] status:', r.status, 'body preview:', text.substring(0, 200));
+            return JSON.parse(text);
+          } catch (e) {
+            return { error: e.message };
+          }
+        },
+        args: [courseCode],
+      });
+      resolve(results[0]?.result ?? { error: 'no_result' });
+    } catch (e) {
+      resolve({ error: e.message });
+    }
   });
 }
 
@@ -169,6 +194,16 @@ function renderDifficultyColumn(data) {
     body.innerHTML = `
       <div id="diff-no-data">
         No DawgPath data<br>for this course yet.
+      </div>`;
+    return;
+  }
+
+  if (data.error === 'no_tab') {
+    body.innerHTML = `
+      <div id="diff-no-data">
+        <a href="https://dawgpath.uw.edu" target="_blank"
+           style="color:#9d7fe8;text-decoration:underline">Open DawgPath</a>
+        in any tab to<br>enable difficulty data.
       </div>`;
     return;
   }
@@ -484,8 +519,12 @@ function renderSectionsColumn(sections, quarter) {
   body.innerHTML = '';
 
   sections.forEach(sec => {
-    const row = document.createElement('div');
-    row.className = 'section-row';
+    const id       = sec.section.trim();
+    const isParent = /^[A-Z]$/.test(id);
+    const isChild  = /^[A-Z]{2}$/.test(id);
+
+    const row      = document.createElement('div');
+    row.className  = isChild ? 'section-row section-child' : 'section-row';
 
     const dotClass = sec.status === 'open'   ? 'dot-open'
                    : sec.status === 'closed' ? 'dot-closed'
@@ -495,10 +534,13 @@ function renderSectionsColumn(sections, quarter) {
       ? formatInstructorForDisplay(sec.instructor)
       : '';
 
+    const prefix = isChild ? '<span class="section-child-prefix">↳</span>' : '';
+
     row.innerHTML = `
       <div class="section-top">
+        ${prefix}
         <span class="section-status-dot ${dotClass}"></span>
-        <span class="section-id">${escHtml(sec.section)}</span>
+        <span class="section-id ${isParent ? 'section-id-parent' : ''}">${escHtml(id)}</span>
         <span class="section-type">${escHtml(sec.type)}</span>
       </div>
       ${sec.days || sec.time
